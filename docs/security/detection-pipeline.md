@@ -1,9 +1,9 @@
 # AutoSOC — Detection Pipeline Architecture
 
-**Version:** 0.1.0  
+**Version:** 0.1.1  
 **Owner:** Pranjal (Cybersecurity Pipeline)  
 **Status:** Draft — Day 1  
-**Last Updated:** 2026-09-21
+**Last Updated:** 2026-10-07
 
 ---
 
@@ -82,8 +82,8 @@ This document describes the end-to-end detection pipeline for AutoSOC — from r
                             │  Incidents
                             ▼
                     ┌────────────────┐
-                    │  STORAGE &     │  ← Elasticsearch / TimescaleDB / flat files
-                    │  INDEXING      │
+                    │  STORAGE &     │  ← PostgreSQL (selected); Redis (cache/state)
+                    │  INDEXING      │     [Elasticsearch / TimescaleDB: deferred]
                     └───────┬────────┘
                             │
                             ▼
@@ -201,7 +201,7 @@ The detection layer consists of four distinct detection mechanisms. These are **
 
 **Sigma integration approach:**
 - Sigma rules authored against the AutoSOC normalized field names
-- `pySigma` used to compile rules to target backends (Elasticsearch, Splunk, OpenSearch)
+- `pySigma` used to compile rules to target backends (Elasticsearch DSL is the initial compilation target; PostgreSQL-compatible backends or direct in-process evaluation may be substituted as the storage architecture matures)
 - Rule set: community Sigma rules (filtered and curated) + AutoSOC-specific rules
 - Rule updates: pull from Sigma GitHub releases; review before deployment
 
@@ -450,13 +450,14 @@ alerts:
 
 | # | Question | Owner | Priority |
 |---|---------|-------|---------|
-| 1 | What message queue does DJ plan to use? (Kafka, Redis Streams, RabbitMQ) | DJ | High |
-| 2 | What storage backend for normalized events? (Elasticsearch, OpenSearch, TimescaleDB) | DJ | High |
+| 1 | ~~What message queue does DJ plan to use?~~ **RESOLVED:** Kafka is the selected event-streaming / message-bus technology | DJ | ~~High~~ Resolved |
+| 2 | ~~What storage backend for normalized events?~~ **RESOLVED:** PostgreSQL (primary relational store); Redis (cache / transient state). Elasticsearch, OpenSearch, and TimescaleDB are deferred alternatives — not current dependencies | DJ | ~~High~~ Resolved |
 | 3 | How will Winlogbeat/Filebeat be configured for lab testing? | DJ | High |
 | 4 | What is the deployment environment for Day 1 pipeline tests? (Docker? local?) | DJ | Medium |
 | 5 | Does Shreyash need real-time alert push (WebSocket) or polling REST API? | Shreyash | Medium |
 | 6 | What is the alert → incident grouping logic? (time window? host? rule family?) | Pranjal + DJ | Medium |
 | 7 | Will ML models be deployed as microservices or in-process? | DJ | Low (future) |
+| 8 | Attack-graph layer (Neo4j) — confirm target phase for implementation planning | DJ + Pranjal | Low (future) |
 
 ---
 

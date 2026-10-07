@@ -1,9 +1,9 @@
 # AutoSOC — Security Tools Research
 
-**Version:** 0.1.0  
+**Version:** 0.1.1  
 **Owner:** Pranjal (Cybersecurity Pipeline)  
 **Status:** Draft — Day 1  
-**Last Updated:** 2026-09-21
+**Last Updated:** 2026-10-07
 
 ---
 
@@ -423,17 +423,44 @@ ATT&CK permeates all layers of AutoSOC:
 
 ---
 
-## 9. Future Tools (Not Day 1)
+## 9. Infrastructure Technology Status
+
+The tables below record the current selection/deferral status of storage and messaging technologies referenced across AutoSOC documentation. This is the authoritative reference for Day 1 architecture decisions.
+
+### 9.1 Selected Infrastructure (Day 1 Architecture)
+
+| Technology | Category | Role in AutoSOC |
+|------------|----------|-----------------|
+| **Kafka** | Event streaming / message bus | Selected ingestion transport: telemetry sources publish to Kafka topics; pipeline consumers read from Kafka |
+| **PostgreSQL** | Relational database | Selected primary structured store: normalized events, alerts, incidents, rules, users, audit log |
+| **Redis** | Cache / transient state | Selected supporting infrastructure: rate-limit counters, session tokens, deduplication state, short-lived caches |
+| **Qdrant** | Vector database | Selected for the future RAG / knowledge layer (Qdrant is provisioned as a Day 1 architecture decision; ingestion begins when the RAG layer is implemented) |
+
+### 9.2 Deferred Storage Alternatives
+
+The following technologies were evaluated and are deferred. They are **not** current dependencies and must not be added as production services without an explicit architecture decision.
+
+| Technology | Category | Status | Notes |
+|------------|----------|--------|-------|
+| **Elasticsearch** | Search + analytics store | Deferred | Evaluated as event storage and Sigma query backend; deferred in favour of PostgreSQL for Day 1 simplicity. May be re-evaluated for large-scale search workloads. |
+| **OpenSearch** | Search + analytics store | Deferred | Open-source Elasticsearch alternative; same evaluation as Elasticsearch; deferred alongside it. |
+| **TimescaleDB** | Time-series PostgreSQL extension | Deferred | Evaluated for high-volume time-series event storage; deferred for now; may be adopted as a PostgreSQL extension if time-series query performance becomes a bottleneck. |
+
+### 9.3 Planned for Later Phase
+
+| Technology | Category | Planned Phase | Notes |
+|------------|----------|---------------|-------|
+| **Neo4j** | Graph database | Attack-graph phase (post Day 1) | Planned for the lateral movement and provenance-graph analysis layer. Not a Day 1 implementation requirement. |
+
+### 9.4 Other Future Security Tools
 
 | Tool | Category | Planned Role |
-|------|----------|-------------|
+|------|----------|--------------|
 | **MISP** | Threat Intelligence Platform | IOC sharing, TI feed management |
 | **OpenCTI** | CTI Platform | Structured threat intelligence, threat actor tracking |
 | **TheHive** | Incident Response Platform | Case management integration |
 | **Velociraptor** | DFIR / EDR | Live endpoint forensics for incident investigation |
-| **Elastic Stack** | Storage + Search | Primary backend for event storage and search |
-| **OpenSearch** | Storage + Search | Alternative to Elastic Stack |
-| **pySigma** | Rule compilation | Sigma → Elasticsearch query compilation |
+| **pySigma** | Rule compilation | Sigma → backend query compilation (Elasticsearch DSL initial target) |
 | **Yara** | Malware signature | File-based malware scanning integration |
 
 ---

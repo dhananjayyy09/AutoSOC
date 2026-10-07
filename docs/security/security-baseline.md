@@ -1,9 +1,9 @@
 # AutoSOC — Security Baseline Requirements
 
-**Version:** 0.1.0  
+**Version:** 0.1.1  
 **Owner:** Pranjal (Cybersecurity Pipeline) — Initial Draft  
 **Status:** Draft — Day 1  
-**Last Updated:** 2026-09-21
+**Last Updated:** 2026-10-07
 
 > **Important:** This document records security *requirements* and *design intent*. Nothing here is implemented yet. All items are flagged with implementation status. Implementation is DJ's responsibility for infrastructure items and a shared responsibility for application-layer controls.
 
@@ -119,6 +119,7 @@ AutoSOC faces unique threats beyond a typical web application:
 - [ ] **REQ-INPUT-009:** PCAP file uploads (for dataset analysis features) must be sandboxed — processed in an isolated container, never on the main application host
 - [ ] **REQ-INPUT-010:** Sigma rule YAML must be parsed in a sandboxed environment; YAML bombs and unsafe tag execution must be blocked (use `pyyaml`'s `safe_load`, not `load`)
 - [ ] **REQ-INPUT-011:** All inputs used in database queries must use parameterized queries or ORM methods — raw string interpolation into queries is forbidden
+- [ ] **REQ-INPUT-012:** Cross-Site Request Forgery (CSRF) protection must be applied to all state-changing API endpoints that are accessible from a browser session. If cookie-based authentication is used, anti-CSRF tokens (e.g., synchronizer token pattern or `SameSite=Strict` cookie attribute) must be enforced on every mutating request (POST, PUT, PATCH, DELETE). If authentication relies exclusively on `Authorization: Bearer` headers with no browser-cookie session, the applicable threat model must be documented and reviewed to confirm that CSRF is not applicable for that endpoint.
 
 ---
 
@@ -273,7 +274,7 @@ LLM agents in AutoSOC will have access to tools (search, database queries, alert
 - [ ] **REQ-NET-001:** All AutoSOC API communications must use TLS 1.2 or higher; TLS 1.0/1.1 disabled
 - [ ] **REQ-NET-002:** Self-signed certificates acceptable for local development only; production requires a valid CA-signed certificate
 - [ ] **REQ-NET-003:** Internal service-to-service calls within Docker/Kubernetes must use internal network only; not exposed externally
-- [ ] **REQ-NET-004:** Elasticsearch / database ports must never be exposed to the internet; accessible only within the internal network or via VPN
+- [ ] **REQ-NET-004:** Database and storage service ports (PostgreSQL, Redis, Qdrant, Kafka brokers, and any future storage backends) must never be exposed to the internet; accessible only within the internal network or via VPN
 
 ---
 
@@ -289,7 +290,7 @@ LLM agents in AutoSOC will have access to tools (search, database queries, alert
 | **P1** | Tool authorization (REQ-TOOL-001–008) | Required before any agent can call external services |
 | **P2 (Before research publication)** | Output validation (REQ-OUTPUT-*) | Results integrity |
 | **P2** | Rate limiting (REQ-RATE-*) | Stability under load |
-| **P3 (Future/Production)** | Input validation (all) | Defence in depth |
+| **P3 (Future/Production)** | Input validation (all), including CSRF (REQ-INPUT-012) | Defence in depth |
 | **P3** | Network security (REQ-NET-*) | Production hardening |
 
 ---
