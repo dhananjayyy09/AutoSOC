@@ -1,39 +1,69 @@
-# AutoSOC
+# AutoSOC — Explainable Multi-Agent AI Platform for Autonomous Security Operations and Threat Hunting
 
-An Explainable Multi-Agent AI Platform for Autonomous Security Operations and Threat Hunting.
+AutoSOC is a research and engineering platform that combines large language models (LLMs), multi-agent orchestration, and classical detection engineering to build an explainable, autonomous Security Operations Center (SOC).
 
-## Overview
-AutoSOC is a university major project designed to automate security operations and provide actionable, explainable threat hunting capabilities through a multi-agent AI architecture.
+---
 
-## Architecture
-- **Backend:** FastAPI, PostgreSQL, Redis, Qdrant, Kafka
-- **Frontend:** (To be implemented)
-- **AI/Agents:** LangGraph (Planned)
+## Team
 
-## Development Setup
+| Developer | Responsibility |
+|-----------|----------------|
+| **DJ** | Architecture, backend, AI infrastructure, orchestration, DevOps |
+| **Pranjal** | Cybersecurity pipeline, detection, threat intelligence, security data, evaluation |
+| **Shreyash** | Frontend, dashboard, visualization, UX |
 
-1. Copy `.env.example` to `.env` and fill in API keys if required (LLMs).
-```bash
-cp .env.example .env
+---
+
+## Project Goals
+
+- Autonomous triage of security alerts with LLM-driven reasoning
+- Explainable detections grounded in MITRE ATT&CK
+- Multi-agent coordination for threat hunting, enrichment, and response
+- Normalized security-event model across heterogeneous telemetry sources
+- Reproducible evaluation on public IDS/EDR/network datasets
+
+---
+
+## Repository Layout
+
+```
+AutoSOC/
+├── README.md
+├── docs/
+│   ├── security/
+│   │   ├── security-event-model.md      # Normalized event schema
+│   │   ├── detection-pipeline.md        # Full pipeline architecture
+│   │   ├── security-tools.md            # Tool integration research
+│   │   └── security-baseline.md         # Security requirements baseline
+│   └── research/
+│       ├── dataset-plan.md              # Dataset evaluation and selection
+│       └── literature-tracker.csv       # Research paper tracker
+├── backend/                             # DJ — API, orchestration, infrastructure
+├── agents/                              # DJ — AI agent definitions
+├── frontend/                            # Shreyash — dashboard and UI
+└── data/                                # Pranjal — sample data, schemas, loaders
 ```
 
-2. Start the local infrastructure using Docker Compose:
-```bash
-docker-compose up -d
-```
+---
 
-3. Setup backend environment:
-```bash
-cd backend
-python -m venv venv
-# On Windows
-venv\Scripts\activate
-# On Unix
-# source venv/bin/activate
-pip install -r requirements.txt
-```
+## Day 1 Status
 
-4. Run the backend locally:
-```bash
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
-```
+- [x] Repository initialized — branch `feature/pranjal/day1-security-foundation`
+- [x] Security event model documented
+- [x] Detection pipeline documented
+- [x] Security tools researched
+- [x] Dataset plan completed
+- [x] Literature tracker seeded
+- [x] Security baseline drafted
+
+---
+
+## Getting Started
+
+> Setup instructions will be added by DJ as the backend scaffolding matures.
+
+---
+
+## License
+
+Research use only. License TBD.
