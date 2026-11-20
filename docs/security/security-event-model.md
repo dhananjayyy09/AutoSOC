@@ -1,9 +1,11 @@
 # AutoSOC — Normalized Security Event Model
 
-**Version:** 0.1.0  
+**Version:** 0.2.0  
 **Owner:** Pranjal (Cybersecurity Pipeline)  
-**Status:** Draft — Day 1  
-**Last Updated:** 2026-09-21
+**Status:** Active — Day 2  
+**Last Updated:** 2026-11-20
+
+> **Day 2 changes (v0.2.0):** Added `ingestion_id` (Required — ingestion layer, UUID v4, identifies delivery attempt), `event_category` (Required — high-level event grouping above `event_type`), and `metadata.raw_hash` (Derived — SHA-256 of raw payload for exact-duplicate detection). See `Decisions.md` DECISION-001, DECISION-002, DECISION-007 for rationale. The consolidated Security Data Contract (`docs/security/security-data-contract.md`) is the Day 2 authoritative reference for lifecycle, source adapters, detection contract, validation, and deduplication strategy.
 
 ---
 
@@ -38,9 +40,11 @@ The **Normalized Security Event Model** defines a common, source-agnostic schema
 
 ```json
 {
-  "event_id":           "<string>",
+  "event_id":           "<string: UUID v4>",
+  "ingestion_id":       "<string: UUID v4>",
   "timestamp":          "<ISO 8601 UTC>",
   "source":             "<string>",
+  "event_category":     "<string>",
   "event_type":         "<string>",
   "host":               "<string>",
   "user":               "<string | null>",
@@ -59,9 +63,46 @@ The **Normalized Security Event Model** defines a common, source-agnostic schema
 }
 ```
 
+> **Day 2 additions:** `ingestion_id` (identifies the delivery attempt, distinct from `event_id`), `event_category` (high-level category above `event_type` — see taxonomy in Section 4.4a below). See `Decisions.md` DECISION-001 and DECISION-002.
+
 ---
 
 ## 4. Field Definitions
+
+### 4.0a `ingestion_id` *(Day 2 addition)*
+
+| Property | Value |
+|----------|-------|
+| **Type** | `string` |
+| **Classification** | Required |
+| **Format** | UUID v4 |
+| **Description** | Assigned by the AutoSOC **Ingestion Layer** at the moment a raw event payload is received from the transport (Kafka). Identifies this specific delivery attempt. Distinct from `event_id` (which is assigned at normalization and identifies the normalized event record). If the same raw event is replayed through the pipeline (e.g., for reprocessing), a new `ingestion_id` is assigned but the `event_id` should remain stable (via `metadata.raw_hash` or `metadata.source_event_id` lookup). |
+| **Example** | `"b7c2d410-1a3f-4e9b-8c01-fedcba987654"` |
+
+---
+
+### 4.0b `event_category` *(Day 2 addition)*
+
+| Property | Value |
+|----------|-------|
+| **Type** | `string` |
+| **Classification** | Required |
+| **Description** | High-level category assigned during normalization. Groups related `event_type` values to enable efficient filtering without substring matching on `event_type`. Derived deterministically from `event_type` using the taxonomy below. |
+| **Example** | `"process"` |
+
+**`event_category` taxonomy:**
+
+| `event_category` | Covered `event_type` values |
+|------------------|-----------------------------|
+| `process` | `process.create`, `process.terminate`, `process.inject` |
+| `network` | `network.connection`, `network.dns`, `network.http`, `network.alert` |
+| `file` | `file.create`, `file.modify`, `file.delete`, `file.rename` |
+| `registry` | `registry.create`, `registry.modify`, `registry.delete` |
+| `auth` | `auth.logon`, `auth.logoff`, `auth.failure` |
+| `alert` | `alert.ids`, `alert.anomaly` |
+| `unknown` | Unrecognized event types |
+
+---
 
 ### 4.1 `event_id`
 
@@ -314,6 +355,7 @@ The **Normalized Security Event Model** defines a common, source-agnostic schema
 | `metadata.source_event_id` | string | Original event ID from the source (e.g., Sysmon EventRecordID) |
 | `metadata.source_severity` | string/int | Raw severity from source before normalization |
 | `metadata.raw_truncated` | boolean | True if `raw_event` was truncated |
+| `metadata.raw_hash` | string | SHA-256 of the raw payload bytes: `sha256:<hex>` — used for exact-duplicate detection *(Day 2 addition)* |
 | `metadata.hashes` | object | Map of algorithm → hex digest (e.g., `{"md5": "...", "sha256": "..."}`) |
 | `metadata.process_path` | string | Full filesystem path of the process executable |
 | `metadata.parent_process` | string | Parent process name |

@@ -1,9 +1,11 @@
 # AutoSOC — Detection Pipeline Architecture
 
-**Version:** 0.1.1  
+**Version:** 0.1.2  
 **Owner:** Pranjal (Cybersecurity Pipeline)  
-**Status:** Draft — Day 1  
-**Last Updated:** 2026-10-07
+**Status:** Active — Day 2  
+**Last Updated:** 2026-11-20
+
+> **Day 2 changes (v0.1.2):** Added Validation as an explicit pipeline stage between Normalization and Feature Extraction (corrects Day 1 omission where validation was listed as an internal step of normalization rather than a distinct stage). Updated Data Flow Contracts table accordingly. See `Decisions.md` DECISION-003 for rationale. The consolidated Security Data Contract (`docs/security/security-data-contract.md`) is the authoritative lifecycle, contract, and boundary reference.
 
 ---
 
@@ -40,10 +42,19 @@ This document describes the end-to-end detection pipeline for AutoSOC — from r
        ▼
 ┌─────────────────┐
 │  NORMALIZATION   │  ← Apply field mappings → Normalized Security Event (see event model)
-│  STAGE           │  ← Assign event_id, ingest_time, pipeline_version
+│  STAGE           │  ← Assign event_id, ingestion_id, event_category, ingest_time, pipeline_version
 └────────┬─────────┘
          │  Normalized Security Events (JSON)
          ▼
+┌─────────────────────┐
+│  VALIDATION          │  ← Schema checks (required fields, types, enums)
+│  STAGE               │  ← Semantic checks (timestamp sanity, field consistency)
+│                      │  ← Dedup flags (raw_hash + source_event_id cache → Redis)
+│                      │  Disposition: Accepted | Accepted-with-warnings | Rejected
+└──────────┬───────────┘
+           │  Validated Normalized Security Events
+           │  (Rejected events → autosoc.errors.validation Kafka topic)
+           ▼
 ┌─────────────────────┐
 │  FEATURE EXTRACTION  │  ← Extract structured features for detection & ML
 │  STAGE               │
@@ -161,6 +172,27 @@ This document describes the end-to-end detection pipeline for AutoSOC — from r
 **Outputs:** Normalized Security Event JSON objects (conforming to `security-event-model.md`).
 
 **Idempotency:** Normalization must be idempotent — re-running on the same ParsedEvent produces the same NormalizedEvent (except `event_id` which is generated once and preserved on replay via `metadata.source_event_id` lookup).
+
+---
+
+### 3.3.5 Validation Stage *(Day 2 explicit stage)*
+
+**Responsibility:** Enforce schema and semantic validity on the Normalized Security Event before it enters storage and detection. This is the gatekeeper between normalization and detection. Only validated events proceed to Feature Extraction.
+
+**Input:** Normalized Security Event from Normalization Stage.
+
+**Schema checks:** Required field presence, type correctness, enum membership (source, event_category, event_type, protocol), UUID format (event_id, ingestion_id), IP address format, port range [0–65535], non-empty host and raw_event.
+
+**Semantic checks:** Timestamp not in future (beyond skew tolerance), timestamp not excessively stale, network field consistency, process field consistency for process events.
+
+**Deduplication check:** `metadata.raw_hash` + `metadata.source_event_id` checked against Redis cache; duplicates flagged with `metadata.possible_duplicate: true` (never silently discarded).
+
+**Event disposition:**
+- **Accepted:** Passes all checks → stored in PostgreSQL `events` table
+- **Accepted with warnings:** Passes schema; semantic warnings present → stored with warning flags
+- **Rejected:** Failed required schema check → routed to `autosoc.errors.validation` Kafka dead-letter topic; NOT stored
+
+**See:** Full validation specification in `security-data-contract.md` Section 3 / Stage 4 and `Decisions.md` DECISION-003.
 
 ---
 
@@ -380,9 +412,10 @@ The detection layer consists of four distinct detection mechanisms. These are **
 |----------|--------|--------|
 | Ingestion → Parsing | Raw bytes + metadata envelope | `{source_type, sensor_id, received_at, raw_payload}` |
 | Parsing → Normalization | ParsedEvent JSON | Source-native field names + `source_type`, `received_at` |
-| Normalization → Feature Extraction | NormalizedEvent JSON | AutoSOC event model (`security-event-model.md`) |
+| Normalization → Validation | NormalizedEvent JSON | AutoSOC event model (`security-event-model.md`) — includes `ingestion_id`, `event_category` |
+| Validation → Feature Extraction | Validated NormalizedEvent JSON | Same schema; rejected events routed to `autosoc.errors.validation` |
 | Feature Extraction → Detection | EnrichedEvent JSON | NormalizedEvent + `features` object |
-| Detection → Alert Generation | DetectionResult JSON | `{detector_type, rule_id, model_id, score, event_id, mitre_techniques}` |
+| Detection → Alert Generation | DetectionResult JSON | `{detector_type, detector_id, confidence, severity, event_id, mitre_techniques, evidence}` |
 | Alert Generation → Triage | Alert JSON | Alert schema (Section 3.6) |
 | Triage → Storage | Incident JSON | Incident schema (Section 3.7) |
 | Storage → Dashboard | REST API / WebSocket | To be defined by DJ |
