@@ -11,3 +11,14 @@ def test_404_handler():
     with TestClient(app) as client:
         response = client.get("/non-existent-route")
         assert response.status_code == 404
+
+def test_global_exception_handler():
+    # Register a temporary test route that triggers an unhandled Exception
+    @app.get("/test-unhandled-exception")
+    async def trigger_exception():
+        raise RuntimeError("Test unhandled server exception")
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.get("/test-unhandled-exception")
+        assert response.status_code == 500
+        assert response.json() == {"message": "Internal Server Error"}

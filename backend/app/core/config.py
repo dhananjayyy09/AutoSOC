@@ -1,3 +1,4 @@
+from pydantic import Field, AliasChoices
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
@@ -5,7 +6,6 @@ class Settings(BaseSettings):
     VERSION: str = "0.1.0"
     API_V1_STR: str = "/api/v1"
     
-    # Postgres
     # Postgres
     POSTGRES_SERVER: str = "localhost"
     POSTGRES_USER: str = "autosoc"
@@ -30,8 +30,15 @@ class Settings(BaseSettings):
     QDRANT_PORT: int = 6333
 
     # Kafka
-    KAFKA_BROKERS: str = "localhost:9092"
+    KAFKA_BROKERS: str = Field(
+        default="localhost:9092",
+        validation_alias=AliasChoices("KAFKA_BROKERS", "KAFKA_BOOTSTRAP_SERVERS")
+    )
 
-    model_config = SettingsConfigDict(env_file="../.env", extra="ignore", case_sensitive=True)
+    model_config = SettingsConfigDict(
+        env_file=(".env", "../.env"),
+        extra="ignore",
+        case_sensitive=True
+    )
 
 settings = Settings()
