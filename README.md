@@ -63,8 +63,21 @@ AutoSOC/
 
 ---
 
-## Day 2 Status (Pranjal — Security Data Architecture)
+## Day 2 Status — Integrated Baseline
 
+### DJ — Backend and Infrastructure
+- [x] FastAPI application foundation with centralized lifespan context management (`backend/main.py`, `backend/app/core/lifespan.py`)
+- [x] Centralized configuration via `pydantic-settings` with type-safe environment variable parsing (`backend/app/core/config.py`)
+- [x] Centralized logging and global exception handler preventing stack trace leakage (`backend/app/core/exceptions.py`, `backend/app/core/logging.py`)
+- [x] PostgreSQL persistence integration using SQLAlchemy and asyncpg connection pooling (`backend/app/db/session.py`)
+- [x] Redis caching client abstraction with asynchronous ping (`backend/app/services/redis_client.py`)
+- [x] Qdrant vector database client abstraction (*Note: HTTP connectivity on port 6333 restricted in sandboxed development proxy*) (`backend/app/services/qdrant_client.py`)
+- [x] Kafka client integration via `confluent_kafka.admin.AdminClient` (`backend/app/services/kafka_client.py`)
+- [x] Operational endpoints: `GET /health` (liveness, HTTP 200) and `GET /ready` (readiness, HTTP 200 healthy / HTTP 503 degraded) (`backend/app/api/health.py`)
+- [x] Active PostgreSQL `SELECT 1` validation within readiness probe
+- [x] Deterministic backend test suite with mocking for dependency state transitions (5/5 tests passing in `backend/tests/`)
+
+### Pranjal — Security Data Architecture
 - [x] Security data contract formalized (`docs/security/security-data-contract.md`)
 - [x] Event lifecycle documented with all 8 stages, inputs, outputs, failure paths
 - [x] Source adapter contracts defined (Sysmon, Zeek, Suricata, Auth logs)
@@ -73,10 +86,24 @@ AutoSOC/
 - [x] Validation stage established as explicit pipeline stage (separate from Normalization)
 - [x] Duplicate event strategy documented (flag, never discard)
 - [x] Architectural boundaries documented (9 interface rules)
-- [x] Phase 2 Weeks 4–7 implementation plan created
-- [x] ChangeLog.md, Decisions.md, Flow.md initialized (mandatory traceability)
+- [x] Phase 2 Weeks 4–7 implementation plan created (`docs/security/phase2-implementation-plan.md`)
+- [x] Centralized traceability maintained in `docs/ChangeLog.md`, `docs/Decisions.md` (DECISION-001 through DECISION-009), `docs/Flow.md`
 - [x] Security Event Model updated to v0.2.0 (`ingestion_id`, `event_category`, `metadata.raw_hash`)
 - [x] Detection Pipeline updated to v0.1.2 (Validation stage in diagram and definitions)
+
+### Shreyash — Frontend Foundation
+- [x] Frontend API integration client with timeout and abort handling (`frontend/src/lib/api.ts`)
+- [x] Custom `ApiError` preserving HTTP 503 structured degraded detail payloads
+- [x] Reusable React hooks for liveness (`useHealthCheck`) and infrastructure readiness (`useReadiness`)
+- [x] System status UI component displaying 4-way infrastructure dependency health (PostgreSQL, Redis, Qdrant, Kafka)
+- [x] Liveness vs. readiness conceptual separation visually enforced in dashboard
+- [x] Manual retry functionality for degraded or unavailable services
+- [x] Root package script proxy (`package.json`) delegating `test`, `build`, `lint`, and `dev` to `frontend/`
+- [x] Frontend unit and component test suite (4 test suites, 21 tests passing via Jest & React Testing Library)
+- [x] Next.js 16 production build verified (15 static routes pre-rendered successfully)
+- [x] Frontend-specific traceability documented in `frontend/ChangeLog.md`, `frontend/Decisions.md`, `frontend/Flow.md`
+
+> **Scope Note:** Telemetry ingestion consumers, live source collectors, Sigma/ML detection engines, AI agents, LLMs, RAG vector pipelines, and autonomous remediation are planned for future phases (Phase 2 & Phase 3) and are intentionally not implemented in Day 2.
 
 ---
 

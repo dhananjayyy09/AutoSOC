@@ -107,27 +107,39 @@ export function HealthCheck() {
               Infrastructure Dependencies
             </p>
             <div className="grid grid-cols-2 gap-2 text-xs">
-              <div className="flex items-center justify-between rounded bg-background px-2.5 py-1.5 border">
-                <span className="text-muted-foreground">PostgreSQL</span>
-                <span className={`font-semibold ${readinessData?.postgres ? "text-green-500" : "text-muted-foreground"}`}>
+              <div className="flex items-center justify-between rounded-md bg-background/60 px-3 py-2 border border-border/80">
+                <div className="flex items-center gap-2">
+                  <span className={`h-2 w-2 rounded-full ${readinessData?.postgres ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]" : "bg-rose-500"}`} />
+                  <span className="font-medium text-foreground">PostgreSQL</span>
+                </div>
+                <span className={`font-semibold ${readinessData?.postgres ? "text-emerald-400" : "text-rose-400"}`}>
                   {readinessData?.postgres ? "Ready" : "Not Ready"}
                 </span>
               </div>
-              <div className="flex items-center justify-between rounded bg-background px-2.5 py-1.5 border">
-                <span className="text-muted-foreground">Redis</span>
-                <span className={`font-semibold ${readinessData?.redis ? "text-green-500" : "text-muted-foreground"}`}>
+              <div className="flex items-center justify-between rounded-md bg-background/60 px-3 py-2 border border-border/80">
+                <div className="flex items-center gap-2">
+                  <span className={`h-2 w-2 rounded-full ${readinessData?.redis ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]" : "bg-rose-500"}`} />
+                  <span className="font-medium text-foreground">Redis</span>
+                </div>
+                <span className={`font-semibold ${readinessData?.redis ? "text-emerald-400" : "text-rose-400"}`}>
                   {readinessData?.redis ? "Ready" : "Not Ready"}
                 </span>
               </div>
-              <div className="flex items-center justify-between rounded bg-background px-2.5 py-1.5 border">
-                <span className="text-muted-foreground">Qdrant</span>
-                <span className={`font-semibold ${readinessData?.qdrant ? "text-green-500" : "text-muted-foreground"}`}>
+              <div className="flex items-center justify-between rounded-md bg-background/60 px-3 py-2 border border-border/80">
+                <div className="flex items-center gap-2">
+                  <span className={`h-2 w-2 rounded-full ${readinessData?.qdrant ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]" : "bg-rose-500"}`} />
+                  <span className="font-medium text-foreground">Qdrant</span>
+                </div>
+                <span className={`font-semibold ${readinessData?.qdrant ? "text-emerald-400" : "text-rose-400"}`}>
                   {readinessData?.qdrant ? "Ready" : "Not Ready"}
                 </span>
               </div>
-              <div className="flex items-center justify-between rounded bg-background px-2.5 py-1.5 border">
-                <span className="text-muted-foreground">Kafka</span>
-                <span className={`font-semibold ${readinessData?.kafka ? "text-green-500" : "text-muted-foreground"}`}>
+              <div className="flex items-center justify-between rounded-md bg-background/60 px-3 py-2 border border-border/80">
+                <div className="flex items-center gap-2">
+                  <span className={`h-2 w-2 rounded-full ${readinessData?.kafka ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]" : "bg-rose-500"}`} />
+                  <span className="font-medium text-foreground">Kafka</span>
+                </div>
+                <span className={`font-semibold ${readinessData?.kafka ? "text-emerald-400" : "text-rose-400"}`}>
                   {readinessData?.kafka ? "Ready" : "Not Ready"}
                 </span>
               </div>
