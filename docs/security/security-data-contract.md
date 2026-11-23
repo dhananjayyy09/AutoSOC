@@ -1,9 +1,9 @@
 # AutoSOC — Security Data Contract
 
-**Version:** 0.1.0  
+**Version:** 0.2.0  
 **Owner:** Pranjal (Cybersecurity Pipeline)  
-**Status:** Draft — Day 2  
-**Last Updated:** 2026-11-20
+**Status:** Active — Day 4 (Phase 1 Architecture Preparation)  
+**Last Updated:** 2026-11-21
 
 > **Purpose of this document:** This is the authoritative reference for the contracts governing security data as it flows through AutoSOC. It consolidates the event lifecycle, source adapter contracts, detection result contract, validation requirements, duplicate-event strategy, and architectural boundaries in one place. It is the primary input document for Phase 2 implementation.
 >
@@ -664,4 +664,133 @@ The event data model is designed to preserve provenance at every step. `raw_even
 
 ---
 
-*Document created by Pranjal — Day 2. Review required by DJ (infrastructure boundaries, Kafka/PostgreSQL/Redis role verification) before Phase 2 Week 4 implementation begins.*
+## 10. Backend Integration Architecture & Service Interfaces (Phase 1 / Day 4)
+
+This section operationalizes the conceptual security data architecture by defining explicit package boundaries, service layer communication protocols, and Python interface contracts within DJ's verified FastAPI backend foundation.
+
+### 10.1 Backend Package & Module Layout Mapping
+
+The security pipeline components map into the existing backend module hierarchy (`backend/app/`) as follows:
+
+| Security Component | Backend Module Path | Key Responsibilities |
+|---|---|---|
+| **Schemas & Models** | `backend/app/events/schemas.py` | Pydantic v2 schemas: `IngestionEnvelope`, `ParsedEvent`, `NormalizedSecurityEvent`, `EventFeatures`. |
+| **Source Adapters** | `backend/app/events/adapters/` | Kafka stream consumers for `autosoc.raw.*`; wraps raw payload in `IngestionEnvelope`. |
+| **Parsers** | `backend/app/events/parsers/` | Stateless source-specific parsers (`sysmon.py`, `zeek.py`, `suricata.py`, `auth.py`). |
+| **Normalization** | `backend/app/events/normalization/` | Field mapping engine (`normalizer.py`, `mappings/`); transforms `ParsedEvent` to `NormalizedSecurityEvent`. |
+| **Validation** | `backend/app/events/validation/` | Schema & business rules validator (`validator.py`, `rules.py`); Redis dedup query; error topic routing. |
+| **Feature Extraction** | `backend/app/events/features/` | Feature extraction pipeline (`extractor.py`); derives structured feature sets from normalized events. |
+| **Event Persistence** | `backend/app/events/repository.py` | Asynchronous SQLAlchemy/asyncpg data access for PostgreSQL `events` table. |
+| **Detection Engine** | `backend/app/detection/` | Detection orchestrator (`engine.py`), Sigma rule compilation and execution (`sigma/`), `DetectionResult` models. |
+| **Detection Persistence** | `backend/app/detection/repository.py`| Asynchronous data access for PostgreSQL `detection_results` table. |
+| **Alert Generation** | `backend/app/alerts/` | Alert generator (`generator.py`), Redis sliding-window dedup (`deduplication.py`), `Alert` models. |
+| **Alert Persistence** | `backend/app/alerts/repository.py` | Asynchronous data access for PostgreSQL `alerts` table. |
+| **Incident Management** | `backend/app/incidents/` | Incident grouping (`grouper.py`), lifecycle transitions (`service.py`), `Incident` models. |
+| **REST API Routers** | `backend/app/api/v1/` | FastAPI routers (`events.py`, `alerts.py`, `incidents.py`) exposing read/write endpoints to frontend. |
+
+### 10.2 Service Layer Communication Contracts
+
+Future security pipeline components must communicate with backend infrastructure services exclusively through standardized service contracts:
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                              Security Pipeline Component                               │
+└────────────┬─────────────────────────────┬───────────────────────────────┬─────────────┘
+             │                             │                               │
+             ▼                             ▼                               ▼
+    PostgreSQL Service               Redis Service                   Kafka Service
+   (`app.db.session`)           (`app.services.redis_client`)    (`app.services.kafka_client`)
+  - AsyncSessionLocal           - redis_service.client           - Consumer polling
+  - Parameterized ORM writes    - Level 1 & Level 3 dedup TTL    - Dead-letter producer
+  - Transaction rollbacks       - Ephemeral rate limits          - Manual offset commits
+```
+
+#### 10.2.1 PostgreSQL Database Interface (`backend/app/db/session.py`)
+- **Injection:** Via FastAPI dependency injection (`Depends(get_db)`) or context-managed async session (`async with AsyncSessionLocal() as session:`).
+- **Security Compliance:** All write operations must use parameterized SQLAlchemy ORM statements or typed models (`REQ-INPUT-011`). Raw string SQL interpolation is forbidden.
+- **Bulk Operations:** Ingestion and normalization pipelines must use `session.execute(insert(EventModel), [...])` for batch inserts to sustain the $\ge 10,000$ EPS design target without transaction bottlenecks.
+
+#### 10.2.2 Redis Cache Interface (`backend/app/services/redis_client.py`)
+- **Client Instance:** Accessed via `redis_service.client` (asynchronous `redis.asyncio.Redis`).
+- **Level 1 Dedup Key:** `autosoc:dedup:raw_hash:<sha256>` with configurable TTL (default 300s). `SETNX` semantics return whether the payload hash was recently observed.
+- **Level 3 Alert Dedup Key:** `autosoc:dedup:alert:<detector_id>:<host>:<time_bucket>` with TTL matching the alert window. Atomic `INCR` tracks alert firing counts.
+- **Failure Behavior:** If Redis is unreachable, the pipeline logs a warning and proceeds with event processing without dedup flagging. Redis failure must **never** cause dropped events or pipeline termination.
+
+#### 10.2.3 Kafka Message Bus Interface (`backend/app/services/kafka_client.py`)
+- **Consumer Model:** Background async workers (or standalone ingestion workers) subscribe to source topics (`autosoc.raw.*`).
+- **Message Serialization:** Envelopes and payloads use UTF-8 encoded JSON.
+- **Offset Commit Semantics:** **At-least-once delivery with manual offset commit**. The worker commits Kafka offsets *only after* the normalized event is successfully committed to PostgreSQL or the malformed payload is delivered to a dead-letter topic.
+- **Dead-Letter Publishing:** Handled via dedicated producer methods on `kafka_service`:
+  - `publish_error(topic="autosoc.errors.parse", envelope=...)`
+  - `publish_error(topic="autosoc.errors.validation", event=...)`
+
+#### 10.2.4 Qdrant Vector Engine Interface (`backend/app/services/qdrant_client.py`)
+- **Isolation:** Real-time event ingestion, parsing, normalization, and rule-based detection have **zero** dependency on Qdrant.
+- **Usage Scope:** Qdrant is reserved exclusively for the future RAG knowledge layer (querying threat actor profiles, CTI reports, and remediation playbooks during alert investigation and triage).
+
+### 10.3 Concrete Python Interface Protocols
+
+To enforce strict decoupling across development boundaries, future security components must adhere to the following Python Protocols (PEP 544):
+
+```python
+from typing import Protocol, runtime_checkable, Dict, Any, Tuple, Optional, List
+from datetime import datetime
+
+@runtime_checkable
+class SourceParserProtocol(Protocol):
+    """Stateless pure-function parser converting raw payloads to source dictionaries."""
+    def parse(self, raw_payload: str, source_type: str) -> Tuple[bool, Optional[Dict[str, Any]], Optional[str]]:
+        """Returns (success, parsed_fields_dict, error_message)."""
+        ...
+
+@runtime_checkable
+class EventNormalizerProtocol(Protocol):
+    """Maps parsed source fields into the normalized security event model."""
+    def normalize(self, parsed_event: Dict[str, Any], ingestion_envelope: Dict[str, Any]) -> Dict[str, Any]:
+        """Returns NormalizedSecurityEvent dictionary with event_id and event_category."""
+        ...
+
+@runtime_checkable
+class EventValidatorProtocol(Protocol):
+    """Validates schema structure and semantic sanity; checks deduplication state."""
+    async def validate(self, normalized_event: Dict[str, Any]) -> Tuple[str, List[str]]:
+        """Returns disposition ('accepted', 'accepted_with_warnings', 'rejected', 'unsupported')
+        and list of warning/error messages."""
+        ...
+
+@runtime_checkable
+class FeatureExtractorProtocol(Protocol):
+    """Derives structured feature sets from validated normalized events."""
+    def extract_features(self, normalized_event: Dict[str, Any]) -> Dict[str, Any]:
+        """Returns structured EventFeatures dictionary."""
+        ...
+
+@runtime_checkable
+class DetectionEngineProtocol(Protocol):
+    """Evaluates rules/models against normalized events and features."""
+    async def evaluate(self, normalized_event: Dict[str, Any], features: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Returns list of DetectionResult dictionaries."""
+        ...
+
+@runtime_checkable
+class AlertGeneratorProtocol(Protocol):
+    """Deduplicates detection results and produces actionable Alert records."""
+    async def process_detection(self, detection_result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Returns Alert dictionary if new alert created, or None if count incremented."""
+        ...
+```
+
+### 10.4 Infrastructure Dependency & Failure Isolation Matrix
+
+| Subsystem | Primary Infrastructure | Fallback / Isolation Policy |
+|---|---|---|
+| **Ingestion Layer** | Kafka (`autosoc.raw.*`) | If Kafka broker unreachable, Beats forwarders buffer locally on disk; ingestion workers apply exponential retry. |
+| **Parsing & Normalization** | In-Process Compute | Zero external dependencies; CPU-bound; failures isolate to dead-letter topics (`autosoc.errors.parse`). |
+| **Validation** | PostgreSQL + Redis | If Redis dedup cache is down, bypass dedup check and write event to PostgreSQL; if PostgreSQL down, do not commit Kafka offset. |
+| **Detection (Sigma)** | In-Process Compute | Rules run against memory representations; rule failure logs error without halting pipeline; emits `DetectionResult` to PostgreSQL. |
+| **Alert Generation** | PostgreSQL + Redis | If Redis dedup fails, fall back to direct PostgreSQL query or create un-deduplicated alert; alert storage retries with backoff. |
+| **Triage & Incidents** | PostgreSQL | Background worker aggregates alerts; failures do not disrupt event ingestion or detection. |
+
+---
+
+*Document created by Pranjal — Day 2. Updated Day 4 (Phase 1 Architecture Preparation) to establish concrete backend service integration boundaries.*
