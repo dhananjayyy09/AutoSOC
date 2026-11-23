@@ -1,17 +1,41 @@
-import type { HealthCheckResponse, ReadinessResponse, ReadinessResult } from "@/types";
+import type { HealthCheckResponse, ReadinessResponse, ReadinessResult, SystemInfoResponse } from "@/types";
 
+// ---------------------------------------------------------------------------
+// Base URL resolution – strip trailing slash exactly once at startup
+// ---------------------------------------------------------------------------
 const getBaseUrl = (): string => {
-  const envUrl = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
+  const envUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
   return envUrl.replace(/\/+$/, "");
 };
 
 export const API_BASE_URL = getBaseUrl();
-const DEFAULT_TIMEOUT = 10000; // 10 seconds
+const DEFAULT_TIMEOUT_MS = 10_000;
 
+// ---------------------------------------------------------------------------
+// Error classification helpers
+// ---------------------------------------------------------------------------
+
+/** True when the error is from an AbortController timeout or manual abort. */
+export function isAbortError(err: unknown): err is DOMException {
+  return (
+    err instanceof DOMException && err.name === "AbortError"
+  );
+}
+
+/** True when the error is a network-level failure (no HTTP response received). */
+export function isNetworkError(err: unknown): boolean {
+  if (isAbortError(err)) return true;
+  if (err instanceof TypeError && err.message.toLowerCase().includes("fetch")) return true;
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// ApiError — carries structured HTTP failure info
+// ---------------------------------------------------------------------------
 export class ApiError extends Error {
-  status: number;
-  statusText: string;
-  data?: unknown;
+  readonly status: number;
+  readonly statusText: string;
+  readonly data?: unknown;
 
   constructor(status: number, statusText: string, data?: unknown) {
     super(`API Error: ${status} ${statusText}`);
@@ -20,23 +44,39 @@ export class ApiError extends Error {
     this.statusText = statusText;
     this.data = data;
   }
+
+  /** User-visible message, never leaking raw internal server errors. */
+  get userMessage(): string {
+    if (this.status === 503) return "One or more backend services are currently unavailable.";
+    if (this.status >= 500) return "The server encountered an unexpected error. Please try again later.";
+    if (this.status === 404) return "The requested resource was not found.";
+    if (this.status === 401 || this.status === 403) return "You do not have permission to perform this action.";
+    return `Unexpected error (HTTP ${this.status}).`;
+  }
 }
 
+// ---------------------------------------------------------------------------
+// ApiClient — centralized HTTP dispatcher
+// ---------------------------------------------------------------------------
 export class ApiClient {
   /**
-   * Centralized HTTP request dispatcher for all API communications.
+   * Core HTTP request dispatcher.
+   * - Normalizes endpoints (adds leading slash if missing).
+   * - Enforces a timeout using AbortController.
+   * - Throws ApiError for non-2xx responses.
+   * - Re-throws network/abort errors unmodified so callers can classify them.
    */
   static async request<T = unknown>(
     endpoint: string,
     options: RequestInit = {},
-    timeout = DEFAULT_TIMEOUT
+    timeoutMs = DEFAULT_TIMEOUT_MS
   ): Promise<T> {
     const baseUrl = getBaseUrl();
     const normalizedEndpoint = endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
     const url = `${baseUrl}${normalizedEndpoint}`;
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeout);
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
       const response = await fetch(url, {
@@ -55,7 +95,7 @@ export class ApiClient {
         try {
           errorData = await response.json();
         } catch {
-          // ignore parsing error if response body is empty or not JSON
+          // Response body is empty or not JSON — that is fine
         }
         throw new ApiError(response.status, response.statusText, errorData);
       }
@@ -67,11 +107,20 @@ export class ApiClient {
     }
   }
 
-  static async get<T = unknown>(endpoint: string, options: RequestInit = {}, timeout = DEFAULT_TIMEOUT): Promise<T> {
-    return this.request<T>(endpoint, { ...options, method: "GET" }, timeout);
+  static async get<T = unknown>(
+    endpoint: string,
+    options: RequestInit = {},
+    timeoutMs = DEFAULT_TIMEOUT_MS
+  ): Promise<T> {
+    return this.request<T>(endpoint, { ...options, method: "GET" }, timeoutMs);
   }
 
-  static async post<T = unknown>(endpoint: string, body?: unknown, options: RequestInit = {}, timeout = DEFAULT_TIMEOUT): Promise<T> {
+  static async post<T = unknown>(
+    endpoint: string,
+    body?: unknown,
+    options: RequestInit = {},
+    timeoutMs = DEFAULT_TIMEOUT_MS
+  ): Promise<T> {
     return this.request<T>(
       endpoint,
       {
@@ -79,11 +128,16 @@ export class ApiClient {
         method: "POST",
         body: body !== undefined ? JSON.stringify(body) : undefined,
       },
-      timeout
+      timeoutMs
     );
   }
 
-  static async put<T = unknown>(endpoint: string, body?: unknown, options: RequestInit = {}, timeout = DEFAULT_TIMEOUT): Promise<T> {
+  static async put<T = unknown>(
+    endpoint: string,
+    body?: unknown,
+    options: RequestInit = {},
+    timeoutMs = DEFAULT_TIMEOUT_MS
+  ): Promise<T> {
     return this.request<T>(
       endpoint,
       {
@@ -91,18 +145,26 @@ export class ApiClient {
         method: "PUT",
         body: body !== undefined ? JSON.stringify(body) : undefined,
       },
-      timeout
+      timeoutMs
     );
   }
 
-  static async delete<T = unknown>(endpoint: string, options: RequestInit = {}, timeout = DEFAULT_TIMEOUT): Promise<T> {
-    return this.request<T>(endpoint, { ...options, method: "DELETE" }, timeout);
+  static async delete<T = unknown>(
+    endpoint: string,
+    options: RequestInit = {},
+    timeoutMs = DEFAULT_TIMEOUT_MS
+  ): Promise<T> {
+    return this.request<T>(endpoint, { ...options, method: "DELETE" }, timeoutMs);
   }
 }
 
+// ---------------------------------------------------------------------------
+// Domain-specific health/readiness helpers
+// ---------------------------------------------------------------------------
+
 /**
- * Checks application liveness by calling GET /health.
- * Returns 'connected' if process is alive, 'unavailable' otherwise.
+ * Checks application liveness via GET /health.
+ * Returns 'connected' if the backend process is reachable, 'unavailable' otherwise.
  */
 export const checkHealth = async (): Promise<{
   status: "connected" | "unavailable";
@@ -118,17 +180,24 @@ export const checkHealth = async (): Promise<{
 };
 
 /**
- * Checks infrastructure readiness by calling GET /ready.
- * Returns:
- * - 'ready': HTTP 200 and all infrastructure components connected
- * - 'degraded': HTTP 503 or any dependency unavailable
- * - 'unavailable': Network error or backend unreachable
+ * Checks infrastructure readiness via GET /ready.
+ *
+ * | HTTP status | Backend payload                | Frontend state |
+ * |-------------|-------------------------------|----------------|
+ * | 200         | all services true              | 'ready'        |
+ * | 200         | any service false              | 'degraded'     |
+ * | 503         | detail: { postgres, … }       | 'degraded'     |
+ * | network err | –                              | 'unavailable'  |
  */
 export const checkReadiness = async (): Promise<ReadinessResult> => {
   try {
     const res = await ApiClient.get<ReadinessResponse>("/ready", { cache: "no-store" });
+
+    if (!res || typeof res !== "object") {
+      return { state: "unavailable", error: new Error("Malformed /ready response") };
+    }
+
     const isReady =
-      res &&
       res.status === "ok" &&
       res.postgres === true &&
       res.redis === true &&
@@ -138,15 +207,15 @@ export const checkReadiness = async (): Promise<ReadinessResult> => {
     return {
       state: isReady ? "ready" : "degraded",
       data: {
-        status: res?.status || "ok",
-        postgres: Boolean(res?.postgres),
-        redis: Boolean(res?.redis),
-        qdrant: Boolean(res?.qdrant),
-        kafka: Boolean(res?.kafka),
+        status: res.status ?? "ok",
+        postgres: Boolean(res.postgres),
+        redis: Boolean(res.redis),
+        qdrant: Boolean(res.qdrant),
+        kafka: Boolean(res.kafka),
       },
     };
   } catch (error) {
-    // If backend returned HTTP 503 (FastAPI raises HTTPException with detail dict)
+    // FastAPI raises HTTPException(503) with a 'detail' dict for degraded state
     if (error instanceof ApiError && error.status === 503) {
       const payload = error.data as Record<string, unknown> | undefined;
       const detail = (
@@ -176,5 +245,26 @@ export const checkReadiness = async (): Promise<ReadinessResult> => {
     }
 
     return { state: "unavailable", error };
+  }
+};
+
+/**
+ * Fetches system information via GET /api/v1/system/info.
+ * Returns null when the endpoint does not exist yet (404).
+ */
+export const checkSystemInfo = async (): Promise<{
+  status: "ok" | "unavailable";
+  data?: SystemInfoResponse;
+  error?: unknown;
+}> => {
+  try {
+    const res = await ApiClient.get<SystemInfoResponse>("/api/v1/system/info", { cache: "no-store" });
+    return { status: "ok", data: res };
+  } catch (error) {
+    // 404 is expected during Phase 1 — endpoint not yet implemented
+    if (error instanceof ApiError && error.status === 404) {
+      return { status: "unavailable", error };
+    }
+    return { status: "unavailable", error };
   }
 };
