@@ -49,12 +49,13 @@ export interface HealthCheckResponse {
 
 /**
  * System information response shape (GET /api/v1/system/info).
- * This endpoint is PLANNED for Phase 2 and may return 404 during Phase 1.
+ * Authoritative response contract from AutoSOC API v1 system endpoint.
  */
 export interface SystemInfoResponse {
+  project_name: string;
   version: string;
+  api_version: string;
   environment: string;
-  build?: string;
 }
 
 /** Generic API response wrapper for future paginated or enveloped endpoints. */

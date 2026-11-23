@@ -141,6 +141,9 @@ class Alert(BaseModel):
     Actionable alert produced downstream by AlertGenerator deduplicating DetectionResults.
     Contract defined in docs/security/detection-pipeline.md §3.6.
     """
+    if PYDANTIC_V2:
+        model_config = ConfigDict(protected_namespaces=())
+
     alert_id: str = Field(description="UUID v4 uniquely identifying this alert")
     created_at: str = Field(description="ISO 8601 UTC timestamp when alert was generated")
     rule_id: Optional[str] = Field(default=None, description="Triggering Sigma rule ID if rule-based")

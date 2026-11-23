@@ -7,6 +7,7 @@ import {
   isAbortError,
   isNetworkError,
 } from '@/lib/api'
+import type { SystemInfoResponse } from '@/types'
 
 // Mock fetch globally
 global.fetch = jest.fn()
@@ -264,8 +265,13 @@ describe('checkReadiness', () => {
 // checkSystemInfo
 // ---------------------------------------------------------------------------
 describe('checkSystemInfo', () => {
-  it('returns ok when endpoint responds', async () => {
-    const mockInfo = { version: '0.1.0', environment: 'development' }
+  it('returns ok when endpoint responds with system info contract', async () => {
+    const mockInfo: SystemInfoResponse = {
+      project_name: 'AutoSOC API',
+      version: '0.1.0',
+      api_version: 'v1',
+      environment: 'development',
+    }
     ;(global.fetch as jest.Mock).mockResolvedValueOnce({ ok: true, json: async () => mockInfo })
 
     const result = await checkSystemInfo()
@@ -273,12 +279,12 @@ describe('checkSystemInfo', () => {
     expect(result.data).toEqual(mockInfo)
   })
 
-  it('returns unavailable on 404 (endpoint not yet implemented)', async () => {
+  it('returns unavailable on 404 or missing resource', async () => {
     ;(global.fetch as jest.Mock).mockResolvedValueOnce({
       ok: false,
       status: 404,
       statusText: 'Not Found',
-      json: async () => ({ detail: 'Not found' }),
+      json: async () => ({ message: 'Not found' }),
     })
 
     const result = await checkSystemInfo()

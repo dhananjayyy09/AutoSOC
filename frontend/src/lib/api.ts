@@ -77,6 +77,9 @@ export class ApiClient {
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    if (typeof timeoutId === "object" && typeof (timeoutId as unknown as { unref?: () => void }).unref === "function") {
+      (timeoutId as unknown as { unref: () => void }).unref();
+    }
 
     try {
       const response = await fetch(url, {
@@ -250,7 +253,7 @@ export const checkReadiness = async (): Promise<ReadinessResult> => {
 
 /**
  * Fetches system information via GET /api/v1/system/info.
- * Returns null when the endpoint does not exist yet (404).
+ * Resolves to { status: "ok", data } when available, or { status: "unavailable", error } on error.
  */
 export const checkSystemInfo = async (): Promise<{
   status: "ok" | "unavailable";
@@ -261,10 +264,6 @@ export const checkSystemInfo = async (): Promise<{
     const res = await ApiClient.get<SystemInfoResponse>("/api/v1/system/info", { cache: "no-store" });
     return { status: "ok", data: res };
   } catch (error) {
-    // 404 is expected during Phase 1 — endpoint not yet implemented
-    if (error instanceof ApiError && error.status === 404) {
-      return { status: "unavailable", error };
-    }
     return { status: "unavailable", error };
   }
 };
