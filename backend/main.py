@@ -1,20 +1,33 @@
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
 from app.core.config import settings
 from app.core.lifespan import lifespan
-from app.core.exceptions import global_exception_handler
+from app.core.logging import setup_logging
+from app.core.exceptions import (
+    global_exception_handler,
+    validation_exception_handler,
+    not_found_handler,
+    RequestLoggingMiddleware,
+)
 from app.api.health import router as health_router
 from app.api.v1.router import api_v1_router
 
+
 def create_app() -> FastAPI:
+    # Initialise structured logging before the application starts
+    setup_logging(log_level=settings.LOG_LEVEL)
+
     app = FastAPI(
         title=settings.PROJECT_NAME,
         description="Explainable Multi-Agent AI Platform for Autonomous Security Operations",
         version=settings.VERSION,
-        lifespan=lifespan
+        lifespan=lifespan,
     )
 
-    # CORS config
+    # ---- Middleware (outer-to-inner order) ----
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],  # Restrict in production
@@ -22,17 +35,22 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(RequestLoggingMiddleware)
 
-    # Global Exception Handler
+    # ---- Exception handlers ----
     app.add_exception_handler(Exception, global_exception_handler)
+    app.add_exception_handler(RequestValidationError, validation_exception_handler)
+    app.add_exception_handler(StarletteHTTPException, not_found_handler)
 
-    # Include root health and readiness router (consumed by frontend system status)
+    # ---- Routers ----
+    # Root health / readiness (consumed by frontend system status)
     app.include_router(health_router, tags=["Health"])
 
-    # Include API v1 router
+    # API v1
     app.include_router(api_v1_router, prefix=settings.API_V1_STR)
 
     return app
+
 
 app = create_app()
 
