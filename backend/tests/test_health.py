@@ -106,18 +106,45 @@ def test_readiness_all_fail(mock_db, mock_kafka, mock_qdrant, mock_redis):
 def test_lifespan_lifecycle():
     import asyncio
     async def run_check():
-        with patch("app.core.lifespan.redis_service.connect", new_callable=AsyncMock) as m_r_c, \
+        with patch("app.core.lifespan.init_db", new_callable=AsyncMock, return_value=True) as m_db_init, \
+             patch("app.core.lifespan.close_db", new_callable=AsyncMock) as m_db_close, \
+             patch("app.core.lifespan.redis_service.connect", new_callable=AsyncMock) as m_r_c, \
              patch("app.core.lifespan.redis_service.close", new_callable=AsyncMock) as m_r_x, \
+             patch("app.core.lifespan.redis_service.check_health", new_callable=AsyncMock, return_value=True), \
              patch("app.core.lifespan.qdrant_service.connect", new_callable=AsyncMock) as m_q_c, \
              patch("app.core.lifespan.qdrant_service.close", new_callable=AsyncMock) as m_q_x, \
+             patch("app.core.lifespan.qdrant_service.check_health", new_callable=AsyncMock, return_value=True), \
              patch("app.core.lifespan.kafka_service.connect", new_callable=AsyncMock) as m_k_c, \
-             patch("app.core.lifespan.kafka_service.close", new_callable=AsyncMock) as m_k_x:
+             patch("app.core.lifespan.kafka_service.close", new_callable=AsyncMock) as m_k_x, \
+             patch("app.core.lifespan.kafka_service.check_health", new_callable=AsyncMock, return_value=True):
             async with lifespan(app):
+                m_db_init.assert_awaited_once()
                 m_r_c.assert_awaited_once()
                 m_q_c.assert_awaited_once()
                 m_k_c.assert_awaited_once()
             m_r_x.assert_awaited_once()
             m_q_x.assert_awaited_once()
             m_k_x.assert_awaited_once()
+            m_db_close.assert_awaited_once()
 
     asyncio.run(run_check())
+
+def test_startup_degraded_logging():
+    import asyncio
+    async def run_degraded():
+        with patch("app.core.lifespan.init_db", new_callable=AsyncMock, return_value=False), \
+             patch("app.core.lifespan.close_db", new_callable=AsyncMock), \
+             patch("app.core.lifespan.redis_service.connect", new_callable=AsyncMock), \
+             patch("app.core.lifespan.redis_service.close", new_callable=AsyncMock), \
+             patch("app.core.lifespan.redis_service.check_health", new_callable=AsyncMock, return_value=False), \
+             patch("app.core.lifespan.qdrant_service.connect", new_callable=AsyncMock), \
+             patch("app.core.lifespan.qdrant_service.close", new_callable=AsyncMock), \
+             patch("app.core.lifespan.qdrant_service.check_health", new_callable=AsyncMock, return_value=False), \
+             patch("app.core.lifespan.kafka_service.connect", new_callable=AsyncMock), \
+             patch("app.core.lifespan.kafka_service.close", new_callable=AsyncMock), \
+             patch("app.core.lifespan.kafka_service.check_health", new_callable=AsyncMock, return_value=False):
+            # Lifespan must complete gracefully and log warnings without raising unhandled crash
+            async with lifespan(app):
+                pass
+
+    asyncio.run(run_degraded())
