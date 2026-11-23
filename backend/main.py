@@ -4,6 +4,7 @@ from app.core.config import settings
 from app.core.lifespan import lifespan
 from app.core.exceptions import global_exception_handler
 from app.api.health import router as health_router
+from app.api.v1.router import api_v1_router
 
 def create_app() -> FastAPI:
     app = FastAPI(
@@ -25,8 +26,11 @@ def create_app() -> FastAPI:
     # Global Exception Handler
     app.add_exception_handler(Exception, global_exception_handler)
 
-    # Include routers
+    # Include root health and readiness router (consumed by frontend system status)
     app.include_router(health_router, tags=["Health"])
+
+    # Include API v1 router
+    app.include_router(api_v1_router, prefix=settings.API_V1_STR)
 
     return app
 

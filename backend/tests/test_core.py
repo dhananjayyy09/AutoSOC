@@ -6,6 +6,7 @@ def test_config():
     assert settings.PROJECT_NAME == "AutoSOC API"
     assert settings.API_V1_STR == "/api/v1"
     assert "postgresql+asyncpg" in settings.async_database_uri
+    assert settings.APP_ENV in ("development", "production", "testing")
 
 def test_404_handler():
     with TestClient(app) as client:
@@ -22,3 +23,13 @@ def test_global_exception_handler():
         response = client.get("/test-unhandled-exception")
         assert response.status_code == 500
         assert response.json() == {"message": "Internal Server Error"}
+
+def test_v1_system_info():
+    with TestClient(app) as client:
+        response = client.get("/api/v1/system/info")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["project_name"] == settings.PROJECT_NAME
+        assert data["version"] == settings.VERSION
+        assert data["api_version"] == "v1"
+        assert data["environment"] == settings.APP_ENV
