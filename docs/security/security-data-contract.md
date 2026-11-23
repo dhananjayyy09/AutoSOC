@@ -77,9 +77,11 @@ This section refines and consolidates the event schema defined in `security-even
 | `metadata.ingest_time` | `string (ISO 8601 UTC)` | **Derived** | Ingestion layer | Time event was received by AutoSOC; always set |
 | `metadata.pipeline_version` | `string` | **Derived** | Normalization layer | Version string of normalization pipeline; always set |
 | `metadata.source_event_id` | `string \| null` | **Derived** | Normalization layer | Source-assigned event identifier where available (e.g., Sysmon EventRecordID, Zeek UID) |
+| `metadata.correlation_id` | `string \| null` | **Derived** | Normalization layer / Ingestion | Logical session, transaction, or multi-stage attack-chain correlation grouping ID |
 | `metadata.raw_hash` | `string` | **Derived** | Ingestion layer | SHA-256 of the raw payload bytes; used for exact-duplicate detection |
 | `metadata.source_severity` | `string \| int \| null` | **Derived** | Normalization layer | Original severity from source before normalization mapping |
 | `metadata.raw_truncated` | `boolean` | **Derived** | Normalization layer | True if `raw_event` exceeded 65,536-byte limit and was truncated |
+| `metadata.possible_duplicate` | `boolean \| null` | **Derived** | Validation layer | True if `raw_hash` or source event ID matched existing record in Redis deduplication window |
 | `metadata.geo` | `object \| null` | **Derived** | Normalization layer | GeoIP result for `source_ip`: `{country, city, asn, org}` |
 | `metadata.is_internal_src` | `boolean \| null` | **Derived** | Normalization layer | Whether `source_ip` is in configured internal subnet list |
 | `metadata.is_internal_dst` | `boolean \| null` | **Derived** | Normalization layer | Whether `destination_ip` is in configured internal subnet list |
@@ -109,9 +111,9 @@ This section refines and consolidates the event schema defined in `security-even
 | `alert` | `alert.ids`, `alert.anomaly` |
 | `unknown` | Unrecognized event types that passed through validation |
 
-### 2.4 `ingestion_id` vs `event_id` vs `source_event_id`
+### 2.4 Identifier Semantics: `ingestion_id` vs `event_id` vs `source_event_id` vs `raw_hash` vs `correlation_id`
 
-This distinction is critical for deduplication and forensic traceability.
+This distinction is critical for deduplication, forensic traceability, and multi-stage attack grouping.
 
 | Identifier | Assigned by | Purpose | Uniqueness |
 |------------|-------------|---------|-----------|
@@ -119,6 +121,7 @@ This distinction is critical for deduplication and forensic traceability.
 | `event_id` | Normalization layer, once per successfully normalized event | Primary key of the normalized event in AutoSOC | Globally unique; generated once at normalization; never reused |
 | `metadata.source_event_id` | Source (extracted by normalization) | The source's own identifier for the event (e.g., Zeek UID, Sysmon EventRecordID) | Unique within a source; not guaranteed globally unique |
 | `metadata.raw_hash` | Ingestion layer, from raw payload bytes | Exact payload fingerprint for byte-level duplicate detection | Same payload → same hash |
+| `metadata.correlation_id` | Pipeline / Analyst / Agent (derived or assigned) | Logical session, transaction, or attack-chain identifier grouping related events | Non-unique; shared across all events in a correlated activity cluster |
 
 ---
 

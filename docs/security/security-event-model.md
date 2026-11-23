@@ -353,9 +353,14 @@ The **Normalized Security Event Model** defines a common, source-agnostic schema
 | `metadata.ingest_time` | ISO 8601 string | Time the event was received by AutoSOC ingestion |
 | `metadata.pipeline_version` | string | Version of the normalization pipeline that processed this event |
 | `metadata.source_event_id` | string | Original event ID from the source (e.g., Sysmon EventRecordID) |
+| `metadata.correlation_id` | string | Logical session, transaction, or attack-chain correlation grouping ID |
 | `metadata.source_severity` | string/int | Raw severity from source before normalization |
 | `metadata.raw_truncated` | boolean | True if `raw_event` was truncated |
 | `metadata.raw_hash` | string | SHA-256 of the raw payload bytes: `sha256:<hex>` — used for exact-duplicate detection *(Day 2 addition)* |
+| `metadata.possible_duplicate` | boolean | Flag set to True if payload hash or source ID matched existing record in deduplication window |
+| `metadata.is_internal_src` | boolean | True if `source_ip` is RFC 1918 private address |
+| `metadata.is_internal_dst` | boolean | True if `destination_ip` is RFC 1918 private address |
+| `metadata.alert_id` | string | UUID v4 of downstream Alert generated from this event |
 | `metadata.hashes` | object | Map of algorithm → hex digest (e.g., `{"md5": "...", "sha256": "..."}`) |
 | `metadata.process_path` | string | Full filesystem path of the process executable |
 | `metadata.parent_process` | string | Parent process name |
@@ -566,8 +571,10 @@ These fields are not taken from any raw event but are computed during or after n
 ```json
 {
   "event_id": "f2a3e881-0b1c-4f7d-9a2e-deadbeef0001",
+  "ingestion_id": "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d",
   "timestamp": "2026-09-21T06:42:17.334Z",
   "source": "sysmon",
+  "event_category": "process",
   "event_type": "process.create",
   "host": "workstation-07.corp.local",
   "user": "john.doe",
@@ -584,7 +591,8 @@ These fields are not taken from any raw event but are computed during or after n
   "raw_event": "<Event xmlns='...'><System>...</System><EventData>...</EventData></Event>",
   "metadata": {
     "ingest_time": "2026-09-21T06:42:18.001Z",
-    "pipeline_version": "0.1.0",
+    "pipeline_version": "0.2.0",
+    "raw_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "source_event_id": "82341",
     "pid": 4288,
     "parent_process": "cmd.exe",
@@ -606,8 +614,10 @@ These fields are not taken from any raw event but are computed during or after n
 ```json
 {
   "event_id": "c9b1a762-3e4f-4a81-b0c2-deadbeef0002",
+  "ingestion_id": "b2c3d4e5-f6a7-8b9c-0d1e-2f3a4b5c6d7e",
   "timestamp": "2026-09-21T06:55:03.000Z",
   "source": "suricata",
+  "event_category": "alert",
   "event_type": "alert.ids",
   "host": "sensor-lan01",
   "user": null,
@@ -624,7 +634,8 @@ These fields are not taken from any raw event but are computed during or after n
   "raw_event": "{\"timestamp\":\"2026-09-21T06:55:03\",\"event_type\":\"alert\",...}",
   "metadata": {
     "ingest_time": "2026-09-21T06:55:03.500Z",
-    "pipeline_version": "0.1.0",
+    "pipeline_version": "0.2.0",
+    "raw_hash": "sha256:d41d8cd98f00b204e9800998ecf8427e00000000000000000000000000000000",
     "source_event_id": "flow_id:1234567890",
     "source_fields": {
       "alert": {
@@ -648,8 +659,10 @@ These fields are not taken from any raw event but are computed during or after n
 ```json
 {
   "event_id": "88fa1023-ccde-4b12-a997-deadbeef0003",
+  "ingestion_id": "c3d4e5f6-a7b8-9c0d-1e2f-3a4b5c6d7e8f",
   "timestamp": "2026-09-21T07:01:44.812Z",
   "source": "zeek",
+  "event_category": "network",
   "event_type": "network.dns",
   "host": "sensor-zeek01",
   "user": null,
@@ -666,7 +679,7 @@ These fields are not taken from any raw event but are computed during or after n
   "raw_event": "{\"ts\":1758146504.812,\"uid\":\"Cl1Ab23Xyz...\",\"id.orig_h\":\"10.0.0.55\",...}",
   "metadata": {
     "ingest_time": "2026-09-21T07:01:45.100Z",
-    "pipeline_version": "0.1.0",
+    "pipeline_version": "0.2.0",
     "source_event_id": "Cl1Ab23Xyz...",
     "source_fields": {
       "uid": "Cl1Ab23Xyz...",
@@ -685,18 +698,21 @@ These fields are not taken from any raw event but are computed during or after n
 
 ## 8. Schema Validation Rules
 
-The normalization layer enforces these constraints before any event is stored:
+The normalization and validation layers enforce these constraints before any event is stored or routed to detection:
 
 1. `event_id` must be a valid UUID v4 — reject otherwise
-2. `timestamp` must parse as ISO 8601 UTC — reject otherwise
-3. `source` must be one of the allowed values — reject otherwise
-4. `event_type` must be in the taxonomy table — store as `alert.unknown` with original type in metadata if unrecognized
-5. `host` must be non-empty — reject if empty
-6. `severity` must be an integer in [1, 5] — clamp if out of range, log warning
-7. `source_ip` and `destination_ip` must be valid IPv4 or IPv6 addresses when non-null — set to null if invalid, log warning
-8. `source_port` and `destination_port` must be 0–65535 when non-null — set to null if out of range
-9. `raw_event` must be non-empty — reject if empty
-10. `metadata` must be a JSON object — reject if not an object
+2. `ingestion_id` must be a valid UUID v4 — reject otherwise
+3. `timestamp` must parse as ISO 8601 UTC — reject otherwise
+4. `source` must be one of the allowed `SourceTypeEnum` values — reject otherwise
+5. `event_category` must be one of the allowed `EventCategoryEnum` values — reject otherwise
+6. `event_type` must be in the taxonomy table — store as `alert.unknown` with original type in metadata if unrecognized
+7. `host` must be non-empty — reject if empty
+8. `severity` must be an integer in [1, 5] — clamp if out of range, log warning
+9. `source_ip` and `destination_ip` must be valid IPv4 or IPv6 addresses when non-null — set to null if invalid, log warning
+10. `source_port` and `destination_port` must be 0–65535 when non-null — set to null if out of range
+11. `protocol` must be one of the allowed `ProtocolEnum` values or null — map unrecognized to `other`, log warning
+12. `raw_event` must be non-empty — reject if empty
+13. `metadata` must be a JSON object — reject if not an object
 
 ---
 
