@@ -1,8 +1,9 @@
 import * as React from "react"
 import { Badge, BadgeProps } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
+import type { SeverityLevel } from "@/types"
 
-export type SeverityLevel = "INFO" | "LOW" | "MEDIUM" | "HIGH" | "CRITICAL"
+export type { SeverityLevel }
 
 interface SeverityBadgeProps extends Omit<BadgeProps, "variant"> {
   level: SeverityLevel

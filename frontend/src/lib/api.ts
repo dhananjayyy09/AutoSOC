@@ -1,6 +1,11 @@
 import type { HealthCheckResponse, ReadinessResponse, ReadinessResult } from "@/types";
 
-export const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
+const getBaseUrl = (): string => {
+  const envUrl = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
+  return envUrl.replace(/\/+$/, "");
+};
+
+export const API_BASE_URL = getBaseUrl();
 const DEFAULT_TIMEOUT = 10000; // 10 seconds
 
 export class ApiError extends Error {
@@ -18,12 +23,21 @@ export class ApiError extends Error {
 }
 
 export class ApiClient {
-  static async get(endpoint: string, options: RequestInit = {}, timeout = DEFAULT_TIMEOUT) {
-    const url = `${API_BASE_URL}${endpoint}`;
-    
+  /**
+   * Centralized HTTP request dispatcher for all API communications.
+   */
+  static async request<T = unknown>(
+    endpoint: string,
+    options: RequestInit = {},
+    timeout = DEFAULT_TIMEOUT
+  ): Promise<T> {
+    const baseUrl = getBaseUrl();
+    const normalizedEndpoint = endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
+    const url = `${baseUrl}${normalizedEndpoint}`;
+
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeout);
-    
+
     try {
       const response = await fetch(url, {
         ...options,
@@ -33,9 +47,9 @@ export class ApiClient {
           ...options.headers,
         },
       });
-      
+
       clearTimeout(timeoutId);
-      
+
       if (!response.ok) {
         let errorData: unknown;
         try {
@@ -45,12 +59,44 @@ export class ApiClient {
         }
         throw new ApiError(response.status, response.statusText, errorData);
       }
-      
-      return response.json();
+
+      return (await response.json()) as T;
     } catch (error) {
       clearTimeout(timeoutId);
       throw error;
     }
+  }
+
+  static async get<T = unknown>(endpoint: string, options: RequestInit = {}, timeout = DEFAULT_TIMEOUT): Promise<T> {
+    return this.request<T>(endpoint, { ...options, method: "GET" }, timeout);
+  }
+
+  static async post<T = unknown>(endpoint: string, body?: unknown, options: RequestInit = {}, timeout = DEFAULT_TIMEOUT): Promise<T> {
+    return this.request<T>(
+      endpoint,
+      {
+        ...options,
+        method: "POST",
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+      },
+      timeout
+    );
+  }
+
+  static async put<T = unknown>(endpoint: string, body?: unknown, options: RequestInit = {}, timeout = DEFAULT_TIMEOUT): Promise<T> {
+    return this.request<T>(
+      endpoint,
+      {
+        ...options,
+        method: "PUT",
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+      },
+      timeout
+    );
+  }
+
+  static async delete<T = unknown>(endpoint: string, options: RequestInit = {}, timeout = DEFAULT_TIMEOUT): Promise<T> {
+    return this.request<T>(endpoint, { ...options, method: "DELETE" }, timeout);
   }
 }
 
@@ -64,7 +110,7 @@ export const checkHealth = async (): Promise<{
   error?: unknown;
 }> => {
   try {
-    const res = await ApiClient.get("/health", { cache: "no-store" });
+    const res = await ApiClient.get<HealthCheckResponse>("/health", { cache: "no-store" });
     return { status: "connected", data: res };
   } catch (error) {
     return { status: "unavailable", error };
@@ -80,8 +126,9 @@ export const checkHealth = async (): Promise<{
  */
 export const checkReadiness = async (): Promise<ReadinessResult> => {
   try {
-    const res: ReadinessResponse = await ApiClient.get("/ready", { cache: "no-store" });
+    const res = await ApiClient.get<ReadinessResponse>("/ready", { cache: "no-store" });
     const isReady =
+      res &&
       res.status === "ok" &&
       res.postgres === true &&
       res.redis === true &&
@@ -91,11 +138,11 @@ export const checkReadiness = async (): Promise<ReadinessResult> => {
     return {
       state: isReady ? "ready" : "degraded",
       data: {
-        status: res.status || "ok",
-        postgres: Boolean(res.postgres),
-        redis: Boolean(res.redis),
-        qdrant: Boolean(res.qdrant),
-        kafka: Boolean(res.kafka),
+        status: res?.status || "ok",
+        postgres: Boolean(res?.postgres),
+        redis: Boolean(res?.redis),
+        qdrant: Boolean(res?.qdrant),
+        kafka: Boolean(res?.kafka),
       },
     };
   } catch (error) {
