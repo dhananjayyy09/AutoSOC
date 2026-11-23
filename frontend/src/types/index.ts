@@ -1,16 +1,20 @@
 // ---------------------------------------------------------------------------
 // AutoSOC – shared frontend types
-// Authoritative definitions for security severity, system health, and
-// foundation domain contracts for Phase 1 & 2 security workflows.
+// Single source of truth for all domain and system types.
+// Do NOT define types in feature or component files — import from here.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// System and health types
 // ---------------------------------------------------------------------------
 
 /** Security severity levels used across the platform. */
 export type SeverityLevel = "INFO" | "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 
 /** Status of a backend health/liveness check. */
-export type HealthStatus = "connected" | "unavailable";
+export type HealthStatus = "loading" | "connected" | "unavailable";
 
-/** Infrastructure readiness statuses. */
+/** Infrastructure readiness state for each known service. */
 export interface InfrastructureReadiness {
   postgres: boolean;
   redis: boolean;
@@ -18,10 +22,10 @@ export interface InfrastructureReadiness {
   kafka: boolean;
 }
 
-/** Conceptual readiness state: ready, degraded, or unavailable. */
+/** Conceptual readiness state for the platform. */
 export type ReadinessState = "ready" | "degraded" | "unavailable";
 
-/** Raw readiness response from GET /ready (matching backend contract). */
+/** Raw readiness response from GET /ready – matches backend contract exactly. */
 export interface ReadinessResponse {
   status: "ok" | "degraded" | string;
   postgres: boolean;
@@ -37,26 +41,53 @@ export interface ReadinessResult {
   error?: unknown;
 }
 
-/** Generic API response wrapper. */
-export interface ApiResponse<T = unknown> {
-  data: T;
-  message?: string;
-}
-
 /** Health endpoint response shape (GET /health). */
 export interface HealthCheckResponse {
   status: string;
   service: string;
 }
 
+/**
+ * System information response shape (GET /api/v1/system/info).
+ * This endpoint is PLANNED for Phase 2 and may return 404 during Phase 1.
+ */
+export interface SystemInfoResponse {
+  version: string;
+  environment: string;
+  build?: string;
+}
+
+/** Generic API response wrapper for future paginated or enveloped endpoints. */
+export interface ApiResponse<T = unknown> {
+  data: T;
+  message?: string;
+}
+
 // ---------------------------------------------------------------------------
-// Security Domain Contracts (Phase 1 Foundation for Future Workflows)
+// Generic async request state
+// Used by useApiRequest hook for feature components.
 // ---------------------------------------------------------------------------
 
-/** Alert lifecycle status. */
+/** Lifecycle state for an asynchronous data request. */
+export type RequestStatus = "idle" | "loading" | "success" | "error";
+
+/** Shaped state for any async request. */
+export interface AsyncState<T> {
+  status: RequestStatus;
+  data: T | null;
+  error: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Security Domain Contracts
+// These define the SHAPE of data the frontend expects from future endpoints.
+// They are NOT connected to live APIs. No real data exists yet.
+// ---------------------------------------------------------------------------
+
+/** Alert lifecycle status values. */
 export type AlertStatus = "open" | "investigating" | "resolved" | "false_positive";
 
-/** Alert domain model contract. */
+/** Alert domain model — reflects planned backend Alert schema. */
 export interface Alert {
   id: string;
   title: string;
@@ -69,10 +100,10 @@ export interface Alert {
   mitreTechniques?: string[];
 }
 
-/** Incident lifecycle status. */
+/** Incident lifecycle status values. */
 export type IncidentStatus = "open" | "triaged" | "contained" | "resolved" | "closed";
 
-/** Incident domain model contract. */
+/** Incident domain model — reflects planned backend Incident schema. */
 export interface Incident {
   id: string;
   title: string;
@@ -84,10 +115,10 @@ export interface Incident {
   updatedAt: string;
 }
 
-/** Investigation lifecycle status. */
+/** Investigation lifecycle status values. */
 export type InvestigationStatus = "active" | "completed" | "archived";
 
-/** Investigation domain model contract. */
+/** Investigation domain model — reflects planned backend Investigation schema. */
 export interface Investigation {
   id: string;
   title: string;
@@ -98,10 +129,10 @@ export interface Investigation {
   createdAt: string;
 }
 
-/** Threat intelligence indicator type. */
+/** Threat intelligence indicator type values. */
 export type ThreatIndicatorType = "ip" | "domain" | "hash" | "url";
 
-/** Threat intelligence indicator domain model contract. */
+/** Threat intelligence indicator domain model. */
 export interface ThreatIntelIndicator {
   id: string;
   type: ThreatIndicatorType;
@@ -112,10 +143,10 @@ export interface ThreatIntelIndicator {
   tags: string[];
 }
 
-/** Threat hunting campaign status. */
+/** Threat hunting campaign status values. */
 export type HuntingCampaignStatus = "draft" | "running" | "completed";
 
-/** Threat hunting campaign domain model contract. */
+/** Threat hunting campaign domain model. */
 export interface HuntingCampaign {
   id: string;
   name: string;
