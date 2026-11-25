@@ -179,7 +179,7 @@ export function NormalizedEventView({
           {!isLoading && !error && !normalizedEvent && (
             <EmptyState
               title="Normalized event not available yet"
-              description="This event is persisted as a raw envelope. Normalized fields will appear once the backend normalization endpoint is available."
+              description="This event is persisted as a raw envelope. No normalized record was returned for this ingestion ID."
               className="h-[220px]"
             />
           )}

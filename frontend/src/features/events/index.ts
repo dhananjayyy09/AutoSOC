@@ -8,8 +8,11 @@ export { NormalizedEventView } from "./normalized-event-view";
 export {
   ingestSecurityEvent,
   fetchRecentEvents,
+  fetchNormalizedEvents,
+  fetchNormalizedEventById,
   EVENT_INGEST_ENDPOINT,
   EVENTS_LIST_ENDPOINT,
+  EVENTS_NORMALIZED_ENDPOINT,
   DEFAULT_RECENT_EVENTS_LIMIT,
 } from "@/lib/api";
 export type {
@@ -18,6 +21,8 @@ export type {
   EventIngestionResponse,
   IngestedEventRecord,
   RecentEventsEnvelope,
+  NormalizedEventResponse,
+  NormalizedEventsEnvelope,
   BackendValidationErrorItem,
   EventCategory,
   EventProtocol,

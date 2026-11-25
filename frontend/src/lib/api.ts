@@ -4,6 +4,9 @@ import type {
   EventIngestionResponse,
   HealthCheckResponse,
   IngestedEventRecord,
+  NormalizedEventResponse,
+  NormalizedEventsEnvelope,
+  NormalizedSecurityEvent,
   ReadinessResponse,
   ReadinessResult,
   RecentEventsEnvelope,
@@ -300,6 +303,7 @@ export const checkSystemInfo = async (): Promise<{
 
 export const EVENT_INGEST_ENDPOINT = "/api/v1/events/ingest";
 export const EVENTS_LIST_ENDPOINT = "/api/v1/events/ingested";
+export const EVENTS_NORMALIZED_ENDPOINT = "/api/v1/events/normalized";
 export const DEFAULT_RECENT_EVENTS_LIMIT = 20;
 
 /**
@@ -344,4 +348,81 @@ export const fetchRecentEvents = async (
   return records
     .filter((item): item is IngestedEventRecord => Boolean(item && typeof item === "object"))
     .slice(0, safeLimit);
+};
+
+/**
+ * Maps backend NormalizedEventResponse wire format to NormalizedSecurityEvent.
+ */
+export function mapNormalizedEventResponse(
+  res: NormalizedEventResponse
+): NormalizedSecurityEvent {
+  return {
+    event_id: res.event_id ?? null,
+    ingestion_id: res.ingestion_id,
+    raw_envelope_id: res.raw_envelope_id,
+    timestamp: res.timestamp ?? null,
+    source: res.source_type,
+    sensor_id: res.sensor_id ?? null,
+    event_category: res.event_category ?? null,
+    event_type: res.event_type ?? null,
+    host: res.host ?? null,
+    user: res.user ?? null,
+    source_ip: res.source_ip ?? null,
+    destination_ip: res.destination_ip ?? null,
+    source_port: res.source_port ?? null,
+    destination_port: res.destination_port ?? null,
+    protocol: res.protocol ?? null,
+    process: res.process ?? null,
+    file_hash: res.file_hash ?? null,
+    domain: res.domain ?? null,
+    command_line: res.command_line ?? null,
+    severity: res.severity ?? null,
+    metadata: res.metadata && typeof res.metadata === "object" ? res.metadata : {},
+    normalization_status: res.normalization_status,
+    warnings: Array.isArray(res.normalization_warnings) ? res.normalization_warnings : [],
+    errors: Array.isArray(res.normalization_errors) ? res.normalization_errors : [],
+    created_at: res.created_at,
+  };
+}
+
+/**
+ * Retrieves recent normalized security events from GET /api/v1/events/normalized.
+ */
+export const fetchNormalizedEvents = async (
+  limit = DEFAULT_RECENT_EVENTS_LIMIT
+): Promise<NormalizedSecurityEvent[]> => {
+  const safeLimit = Math.max(1, Math.min(limit, 100));
+  const res = await ApiClient.get<NormalizedEventResponse[] | NormalizedEventsEnvelope>(
+    `${EVENTS_NORMALIZED_ENDPOINT}?limit=${safeLimit}`,
+    { cache: "no-store" }
+  );
+
+  let records: unknown[] = [];
+  if (Array.isArray(res)) {
+    records = res;
+  } else if (res && typeof res === "object" && Array.isArray(res.items)) {
+    records = res.items;
+  }
+
+  return records
+    .filter((item): item is NormalizedEventResponse => Boolean(item && typeof item === "object"))
+    .slice(0, safeLimit)
+    .map(mapNormalizedEventResponse);
+};
+
+/**
+ * Retrieves a single normalized security event by event_id from
+ * GET /api/v1/events/normalized/{event_id}.
+ */
+export const fetchNormalizedEventById = async (
+  eventId: string
+): Promise<NormalizedSecurityEvent> => {
+  const res = await ApiClient.get<NormalizedEventResponse>(
+    `${EVENTS_NORMALIZED_ENDPOINT}/${encodeURIComponent(eventId)}`,
+    { cache: "no-store" }
+  );
+  if (!res || typeof res !== "object" || typeof res.ingestion_id !== "string") {
+    throw new Error("Malformed response from normalized event endpoint");
+  }
+  return mapNormalizedEventResponse(res);
 };

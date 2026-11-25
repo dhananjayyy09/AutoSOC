@@ -9,6 +9,7 @@ import type { IngestedEventRecord, NormalizedSecurityEvent } from '@/types'
 describe('NormalizationStatusBadge', () => {
   it.each([
     ['normalized', 'Normalized'],
+    ['normalized_with_warnings', 'Normalized with Warnings'],
     ['accepted', 'Accepted (Raw)'],
     ['accepted_with_warnings', 'Accepted with Warnings'],
     ['pending', 'Pending Normalization'],

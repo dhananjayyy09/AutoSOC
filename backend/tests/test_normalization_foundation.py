@@ -223,7 +223,7 @@ def test_ingest_suricata_normalizes_and_persists_successfully(day7_db):
     assert norm_rec.source_port == 54321
     assert norm_rec.destination_port == 443
     assert norm_rec.protocol == "tcp"
-    assert norm_rec.severity == 3  # Suricata 2 -> AutoSOC 3
+    assert norm_rec.severity == 4  # Suricata 2 (High) -> AutoSOC 4
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +279,7 @@ def test_normalization_service_records_unsupported_without_losing_raw(day7_db):
         assert norm.normalization_status == "unsupported"
         assert norm.event_id is None
         assert len(norm.normalization_errors) == 1
-        assert "unsupported" in norm.normalization_errors[0].lower()
+        assert "custom" in norm.normalization_errors[0].lower()
         assert len(day7_db.raw_rows) == 1
 
     asyncio.run(_run())
@@ -529,3 +529,91 @@ def test_normalized_retrieval_invalid_limit_returns_422(day7_db, bad_limit):
     resp = client.get("/api/v1/events/normalized", params={"limit": bad_limit})
     assert resp.status_code == 422
     assert resp.json()["message"] == "Validation error"
+
+
+def test_ingest_sysmon_zeek_and_warnings_end_to_end_via_deterministic_pipeline(day7_db):
+    # 1. Valid Sysmon XML -> normalized
+    sysmon_xml = (
+        '<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">'
+        "<System><EventID>1</EventID><EventRecordID>42</EventRecordID>"
+        '<TimeCreated SystemTime="2026-11-25T10:00:00.000Z"/>'
+        "<Computer>WIN-WORKSTATION</Computer></System>"
+        "<EventData>"
+        '<Data Name="User">CORP\\jdoe</Data>'
+        '<Data Name="Image">C:\\Windows\\System32\\cmd.exe</Data>'
+        '<Data Name="CommandLine">cmd.exe /c whoami</Data>'
+        '<Data Name="Hashes">SHA256=' + ("a" * 64) + "</Data>"
+        "</EventData></Event>"
+    )
+    sysmon_payload = {
+        "ingestion_id": "19191919-1111-4111-8111-111111111111",
+        "source_type": "sysmon",
+        "sensor_id": "win-sensor-01",
+        "ingest_time": "2026-11-25T10:00:02Z",
+        "raw_hash": compute_raw_hash(sysmon_xml),
+        "raw_payload": sysmon_xml,
+    }
+    r_sysmon = client.post("/api/v1/events/ingest", json=sysmon_payload)
+    assert r_sysmon.status_code == 201
+    assert r_sysmon.json()["normalization_status"] == "normalized"
+    sys_detail = client.get(f"/api/v1/events/normalized/{r_sysmon.json()['event_id']}").json()
+    assert sys_detail["event_type"] == "process.create"
+    assert sys_detail["user"] == "jdoe"
+    assert sys_detail["process"] == "cmd.exe"
+    assert sys_detail["file_hash"] == "sha256:" + ("a" * 64)
+
+    # 2. Valid Zeek DNS JSON -> normalized
+    zeek_json = json.dumps(
+        {
+            "ts": "2026-11-25T10:01:00Z",
+            "uid": "CzeekTest01",
+            "id.orig_h": "10.0.0.5",
+            "id.resp_h": "198.51.100.53",
+            "id.orig_p": 51234,
+            "id.resp_p": 53,
+            "proto": "udp",
+            "query": "API.EXAMPLE.INVALID.",
+        }
+    )
+    zeek_payload = {
+        "ingestion_id": "20202020-1111-4111-8111-111111111111",
+        "source_type": "zeek",
+        "sensor_id": "zeek-sensor-01",
+        "ingest_time": "2026-11-25T10:01:02Z",
+        "raw_hash": compute_raw_hash(zeek_json),
+        "raw_payload": zeek_json,
+    }
+    r_zeek = client.post("/api/v1/events/ingest", json=zeek_payload)
+    assert r_zeek.status_code == 201
+    assert r_zeek.json()["normalization_status"] == "normalized"
+    zeek_detail = client.get(f"/api/v1/events/normalized/{r_zeek.json()['event_id']}").json()
+    assert zeek_detail["event_type"] == "network.dns"
+    assert zeek_detail["domain"] == "api.example.invalid"
+
+    # 3. Suricata with out-of-range port & bad IP -> normalized_with_warnings
+    warn_suricata = json.dumps(
+        {
+            "timestamp": "2026-11-25T10:02:00Z",
+            "event_type": "flow",
+            "src_ip": "invalid-ip",
+            "dest_port": 70000,
+            "proto": "sctp",
+        }
+    )
+    warn_payload = {
+        "ingestion_id": "21212121-1111-4111-8111-111111111111",
+        "source_type": "suricata",
+        "sensor_id": "suricata-01",
+        "ingest_time": "2026-11-25T10:02:02Z",
+        "raw_hash": compute_raw_hash(warn_suricata),
+        "raw_payload": warn_suricata,
+    }
+    r_warn = client.post("/api/v1/events/ingest", json=warn_payload)
+    assert r_warn.status_code == 201
+    assert r_warn.json()["normalization_status"] == "normalized_with_warnings"
+    warn_detail = client.get(f"/api/v1/events/normalized/{r_warn.json()['event_id']}").json()
+    assert warn_detail["normalization_status"] == "normalized_with_warnings"
+    assert len(warn_detail["normalization_warnings"]) == 3
+    assert warn_detail["source_ip"] is None
+    assert warn_detail["destination_port"] is None
+    assert warn_detail["protocol"] == "other"

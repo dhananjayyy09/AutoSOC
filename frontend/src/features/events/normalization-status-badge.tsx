@@ -20,6 +20,12 @@ function getStatusPresentation(status: NormalizationStatus | null | undefined): 
         className: "border-emerald-500/40 bg-emerald-500/10 text-emerald-300",
         Icon: CheckCircle2,
       }
+    case "normalized_with_warnings":
+      return {
+        label: "Normalized with Warnings",
+        className: "border-amber-500/40 bg-amber-500/10 text-amber-300",
+        Icon: AlertTriangle,
+      }
     case "accepted":
       return {
         label: "Accepted (Raw)",
