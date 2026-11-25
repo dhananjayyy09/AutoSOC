@@ -1,4 +1,14 @@
-import type { HealthCheckResponse, ReadinessResponse, ReadinessResult, SystemInfoResponse } from "@/types";
+import type {
+  BackendValidationErrorItem,
+  EventIngestionRequest,
+  EventIngestionResponse,
+  HealthCheckResponse,
+  IngestedEventRecord,
+  ReadinessResponse,
+  ReadinessResult,
+  RecentEventsEnvelope,
+  SystemInfoResponse,
+} from "@/types";
 
 // ---------------------------------------------------------------------------
 // Base URL resolution – strip trailing slash exactly once at startup
@@ -49,9 +59,24 @@ export class ApiError extends Error {
   get userMessage(): string {
     if (this.status === 503) return "One or more backend services are currently unavailable.";
     if (this.status >= 500) return "The server encountered an unexpected error. Please try again later.";
-    if (this.status === 404) return "The requested resource was not found.";
+    if (this.status === 422) return "The submitted payload failed validation. Please review your input and try again.";
+    if (this.status === 404) return "The requested endpoint or resource was not found.";
     if (this.status === 401 || this.status === 403) return "You do not have permission to perform this action.";
     return `Unexpected error (HTTP ${this.status}).`;
+  }
+
+  /** Extracts safe field-level validation errors from a 422 response, if present. */
+  get validationErrors(): BackendValidationErrorItem[] {
+    if (!this.data || typeof this.data !== "object") return [];
+    const payload = this.data as Record<string, unknown>;
+    if (!Array.isArray(payload.errors)) return [];
+    return payload.errors
+      .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
+      .map((item) => ({
+        field: typeof item.field === "string" ? item.field : undefined,
+        message: typeof item.message === "string" ? item.message : "Invalid value",
+        type: typeof item.type === "string" ? item.type : undefined,
+      }));
   }
 }
 
@@ -266,4 +291,56 @@ export const checkSystemInfo = async (): Promise<{
   } catch (error) {
     return { status: "unavailable", error };
   }
+};
+
+// ---------------------------------------------------------------------------
+// Security Event Ingestion & Retrieval (Day 6)
+// ---------------------------------------------------------------------------
+
+export const EVENT_INGEST_ENDPOINT = "/api/v1/events/ingest";
+export const EVENTS_LIST_ENDPOINT = "/api/v1/events";
+export const DEFAULT_RECENT_EVENTS_LIMIT = 20;
+
+/**
+ * Submits a JSON security event payload to POST /api/v1/events/ingest.
+ * Throws ApiError on HTTP 4xx/5xx or network/abort errors on transport failure.
+ */
+export const ingestSecurityEvent = async (
+  payload: EventIngestionRequest
+): Promise<EventIngestionResponse> => {
+  const res = await ApiClient.post<EventIngestionResponse>(EVENT_INGEST_ENDPOINT, payload);
+  if (!res || typeof res !== "object" || typeof res.ingestion_id !== "string") {
+    throw new Error("Malformed response from event ingestion endpoint");
+  }
+  return res;
+};
+
+/**
+ * Retrieves recent ingested events from GET /api/v1/events with bounded limit.
+ * Normalizes array or enveloped ({ events } / { items }) responses without
+ * fabricating missing records.
+ */
+export const fetchRecentEvents = async (
+  limit = DEFAULT_RECENT_EVENTS_LIMIT
+): Promise<IngestedEventRecord[]> => {
+  const safeLimit = Math.max(1, Math.min(limit, 100));
+  const res = await ApiClient.get<IngestedEventRecord[] | RecentEventsEnvelope>(
+    `${EVENTS_LIST_ENDPOINT}?limit=${safeLimit}`,
+    { cache: "no-store" }
+  );
+
+  let records: unknown[] = [];
+  if (Array.isArray(res)) {
+    records = res;
+  } else if (res && typeof res === "object") {
+    if (Array.isArray(res.events)) {
+      records = res.events;
+    } else if (Array.isArray(res.items)) {
+      records = res.items;
+    }
+  }
+
+  return records
+    .filter((item): item is IngestedEventRecord => Boolean(item && typeof item === "object"))
+    .slice(0, safeLimit);
 };

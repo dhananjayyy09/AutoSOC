@@ -65,6 +65,62 @@ export interface ApiResponse<T = unknown> {
 }
 
 // ---------------------------------------------------------------------------
+// Security Event Ingestion Contracts (Day 6)
+// Aligned with backend/app/events/schemas.py & core/exceptions.py
+// ---------------------------------------------------------------------------
+
+/** Supported telemetry source systems (SourceTypeEnum). */
+export type SecurityEventSource =
+  | "sysmon"
+  | "zeek"
+  | "suricata"
+  | "windows_event_log"
+  | "auditd"
+  | "osquery"
+  | "custom";
+
+/** Structured field validation error item returned by FastAPI 422 handler. */
+export interface BackendValidationErrorItem {
+  field?: string;
+  message: string;
+  type?: string;
+}
+
+/** Arbitrary JSON object payload submitted to the ingestion endpoint. */
+export type EventIngestionRequest = Record<string, unknown>;
+
+/** Response returned after submitting a security event for ingestion. */
+export interface EventIngestionResponse {
+  ingestion_id: string;
+  event_id?: string | null;
+  status: string;
+  source?: string;
+  event_type?: string;
+  ingest_time?: string;
+  timestamp?: string;
+  message?: string;
+}
+
+/** Recent ingested event record returned by the retrieval endpoint. */
+export interface IngestedEventRecord {
+  ingestion_id: string;
+  event_id?: string | null;
+  source?: string;
+  source_type?: string;
+  event_type?: string;
+  timestamp?: string;
+  ingest_time?: string;
+  status: string;
+}
+
+/** Envelope shapes supported by GET /api/v1/events. */
+export interface RecentEventsEnvelope {
+  events?: IngestedEventRecord[];
+  items?: IngestedEventRecord[];
+  total?: number;
+}
+
+// ---------------------------------------------------------------------------
 // Generic async request state
 // Used by useApiRequest hook for feature components.
 // ---------------------------------------------------------------------------
