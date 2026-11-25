@@ -8,7 +8,7 @@ bounded retrieval endpoints.
 
 import re
 from datetime import datetime
-from typing import List
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
@@ -85,8 +85,16 @@ class EventIngestionResponse(BaseModel):
     """Stable acknowledgement returned upon persisting a raw security-event envelope."""
 
     ingestion_id: str = Field(description="Unique delivery attempt UUID from envelope")
+    event_id: Optional[str] = Field(
+        default=None,
+        description="Normalized event UUID if deterministic normalization succeeded",
+    )
     source_type: SourceTypeEnum = Field(description="Validated telemetry source type")
     status: str = Field(description="Processing disposition status (accepted or accepted_with_warnings)")
+    normalization_status: Optional[str] = Field(
+        default=None,
+        description="Normalization outcome (normalized, normalized_with_warnings, failed, unsupported)",
+    )
     possible_duplicate: bool = Field(
         description="True if an identical raw_hash was previously ingested"
     )
@@ -121,6 +129,44 @@ class IngestedEventListResponse(BaseModel):
     """Paginated/bounded list of recently ingested raw event envelopes."""
 
     items: List[IngestedEventSummary]
+    count: int
+    limit: int
+
+
+class NormalizedEventResponse(BaseModel):
+    """Safe API representation of a normalized security event (omits raw_payload)."""
+
+    event_id: Optional[str] = None
+    ingestion_id: str
+    raw_envelope_id: int
+    timestamp: Optional[str] = None
+    source_type: SourceTypeEnum
+    sensor_id: str
+    event_category: Optional[str] = None
+    event_type: Optional[str] = None
+    host: Optional[str] = None
+    user: Optional[str] = None
+    source_ip: Optional[str] = None
+    destination_ip: Optional[str] = None
+    source_port: Optional[int] = None
+    destination_port: Optional[int] = None
+    protocol: Optional[str] = None
+    process: Optional[str] = None
+    file_hash: Optional[str] = None
+    domain: Optional[str] = None
+    command_line: Optional[str] = None
+    severity: Optional[int] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    normalization_status: str
+    normalization_errors: List[str] = Field(default_factory=list)
+    normalization_warnings: List[str] = Field(default_factory=list)
+    created_at: str
+
+
+class NormalizedEventListResponse(BaseModel):
+    """Bounded list of recently normalized security events."""
+
+    items: List[NormalizedEventResponse]
     count: int
     limit: int
 

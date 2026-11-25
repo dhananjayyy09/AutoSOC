@@ -22,7 +22,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 from main import app
 from app.db.session import get_db
-from app.events.models import RawEventEnvelope
+from app.events.models import NormalizedEvent, RawEventEnvelope
 from app.events.repository import (
     DuplicateIngestionIdError,
     EventPersistenceError,
@@ -59,14 +59,27 @@ class InMemoryFakeSession:
 
     def __init__(self) -> None:
         self.rows: List[RawEventEnvelope] = []
-        self._pending: Optional[RawEventEnvelope] = None
+        self.normalized_rows: List[NormalizedEvent] = []
+        self._pending: Optional[Any] = None
         self._next_id = 1
+        self._next_norm_id = 1
         self.committed = False
         self.rolled_back = False
 
     async def scalar(self, stmt: Any) -> Any:
         compiled = str(stmt)
         params = stmt.compile().params
+        if "FROM normalized_events" in compiled:
+            target_val = next(iter(params.values()))
+            if "normalized_events.ingestion_id" in compiled:
+                for n in self.normalized_rows:
+                    if n.ingestion_id == target_val:
+                        return n
+            if "normalized_events.event_id" in compiled:
+                for n in self.normalized_rows:
+                    if n.event_id == target_val:
+                        return n
+            return None
         if "raw_event_envelopes.ingestion_id" in compiled:
             target_id = next(iter(params.values()))
             for row in self.rows:
@@ -82,22 +95,30 @@ class InMemoryFakeSession:
         return None
 
     async def scalars(self, stmt: Any) -> MagicMock:
+        compiled = str(stmt)
         params = stmt.compile().params
         limit_val = next(iter(params.values()), 20)
-        ordered = sorted(
-            self.rows,
-            key=lambda r: (r.received_at, r.id),
-            reverse=True,
-        )[:limit_val]
+        if "FROM normalized_events" in compiled:
+            ordered = sorted(
+                self.normalized_rows,
+                key=lambda r: (r.created_at, r.id),
+                reverse=True,
+            )[:limit_val]
+        else:
+            ordered = sorted(
+                self.rows,
+                key=lambda r: (r.received_at, r.id),
+                reverse=True,
+            )[:limit_val]
         result = MagicMock()
         result.all.return_value = ordered
         return result
 
-    def add(self, obj: RawEventEnvelope) -> None:
+    def add(self, obj: Any) -> None:
         self._pending = obj
 
     async def commit(self) -> None:
-        if self._pending is not None:
+        if isinstance(self._pending, RawEventEnvelope):
             if any(r.ingestion_id == self._pending.ingestion_id for r in self.rows):
                 raise IntegrityError("INSERT", {}, Exception("unique violation"))
             self._pending.id = self._next_id
@@ -105,6 +126,13 @@ class InMemoryFakeSession:
             if self._pending.received_at is None:
                 self._pending.received_at = datetime.now(timezone.utc)
             self.rows.append(self._pending)
+            self._pending = None
+        elif isinstance(self._pending, NormalizedEvent):
+            self._pending.id = self._next_norm_id
+            self._next_norm_id += 1
+            if self._pending.created_at is None:
+                self._pending.created_at = datetime.now(timezone.utc)
+            self.normalized_rows.append(self._pending)
             self._pending = None
         self.committed = True
 

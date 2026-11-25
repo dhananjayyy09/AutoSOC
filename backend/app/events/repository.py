@@ -8,13 +8,13 @@ payloads (raw_hash) without silently discarding events.
 """
 
 import logging
-from typing import List
+from typing import List, Optional
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.events.models import RawEventEnvelope
+from app.events.models import NormalizedEvent, RawEventEnvelope
 from app.events.schemas import IngestionEnvelope
 
 logger = logging.getLogger("autosoc")
@@ -136,4 +136,113 @@ async def list_recent_envelopes(
         return list(result.all())
     except SQLAlchemyError as exc:
         logger.error("Database failure retrieving recent event envelopes: %s", exc, exc_info=True)
+        raise EventPersistenceError("Database retrieval failure") from exc
+
+
+async def get_raw_envelope_by_ingestion_id(
+    session: AsyncSession, ingestion_id: str
+) -> Optional[RawEventEnvelope]:
+    """Retrieve a persisted RawEventEnvelope by its ingestion_id."""
+    try:
+        return await session.scalar(
+            select(RawEventEnvelope)
+            .where(RawEventEnvelope.ingestion_id == ingestion_id)
+            .limit(1)
+        )
+    except SQLAlchemyError as exc:
+        logger.error(
+            "Database failure retrieving raw envelope ingestion_id=%s: %s",
+            ingestion_id,
+            exc,
+            exc_info=True,
+        )
+        raise EventPersistenceError("Database retrieval failure") from exc
+
+
+async def get_normalized_event_by_ingestion_id(
+    session: AsyncSession, ingestion_id: str
+) -> Optional[NormalizedEvent]:
+    """Retrieve a NormalizedEvent by its originating ingestion_id."""
+    try:
+        return await session.scalar(
+            select(NormalizedEvent)
+            .where(NormalizedEvent.ingestion_id == ingestion_id)
+            .limit(1)
+        )
+    except SQLAlchemyError as exc:
+        logger.error(
+            "Database failure retrieving normalized event for ingestion_id=%s: %s",
+            ingestion_id,
+            exc,
+            exc_info=True,
+        )
+        raise EventPersistenceError("Database retrieval failure") from exc
+
+
+async def get_normalized_event_by_event_id(
+    session: AsyncSession, event_id: str
+) -> Optional[NormalizedEvent]:
+    """Retrieve a single NormalizedEvent by its stable event_id."""
+    try:
+        return await session.scalar(
+            select(NormalizedEvent)
+            .where(NormalizedEvent.event_id == event_id)
+            .limit(1)
+        )
+    except SQLAlchemyError as exc:
+        logger.error(
+            "Database failure retrieving normalized event event_id=%s: %s",
+            event_id,
+            exc,
+            exc_info=True,
+        )
+        raise EventPersistenceError("Database retrieval failure") from exc
+
+
+async def persist_normalized_event(
+    session: AsyncSession, record: NormalizedEvent
+) -> NormalizedEvent:
+    """
+    Persist a NormalizedEvent (success or failure record) in PostgreSQL.
+    Rolls back and raises EventPersistenceError on database failure.
+    """
+    try:
+        session.add(record)
+        await session.commit()
+        await session.refresh(record)
+        logger.info(
+            "Persisted normalized event ingestion_id=%s event_id=%s status=%s",
+            record.ingestion_id,
+            record.event_id,
+            record.normalization_status,
+        )
+        return record
+    except SQLAlchemyError as exc:
+        await session.rollback()
+        logger.error(
+            "Database failure persisting normalized event for ingestion_id=%s: %s",
+            record.ingestion_id,
+            exc,
+            exc_info=True,
+        )
+        raise EventPersistenceError("Normalized event persistence failure") from exc
+
+
+async def list_recent_normalized_events(
+    session: AsyncSession, limit: int = 20
+) -> List[NormalizedEvent]:
+    """
+    Retrieve recently processed normalized events using deterministic descending order
+    (`created_at DESC, id DESC`).
+    """
+    try:
+        stmt = (
+            select(NormalizedEvent)
+            .order_by(NormalizedEvent.created_at.desc(), NormalizedEvent.id.desc())
+            .limit(limit)
+        )
+        result = await session.scalars(stmt)
+        return list(result.all())
+    except SQLAlchemyError as exc:
+        logger.error("Database failure retrieving normalized events: %s", exc, exc_info=True)
         raise EventPersistenceError("Database retrieval failure") from exc
