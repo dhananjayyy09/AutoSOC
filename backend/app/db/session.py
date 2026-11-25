@@ -2,6 +2,7 @@ from collections.abc import AsyncGenerator
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy import text
 from app.core.config import settings
+from app.db.base import Base
 import logging
 
 logger = logging.getLogger("autosoc")
@@ -25,9 +26,12 @@ async def check_health() -> bool:
 
 async def init_db() -> bool:
     try:
-        async with engine.connect() as conn:
+        # Ensure ORM models are imported and registered before metadata sync
+        import app.events.models  # noqa: F401
+        async with engine.begin() as conn:
             await conn.execute(text("SELECT 1"))
-        logger.info("Connected to PostgreSQL successfully.")
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("Connected to PostgreSQL and verified schema successfully.")
         return True
     except Exception as e:
         logger.error(f"Failed to connect to PostgreSQL: {e}")

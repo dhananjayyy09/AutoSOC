@@ -75,6 +75,28 @@ async def not_found_handler(request: Request, exc: Exception) -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
+# Event ingestion domain error handlers (409 / 500)
+# ---------------------------------------------------------------------------
+
+async def duplicate_ingestion_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Return a consistent 409 Conflict when an ingestion_id is submitted twice."""
+    logger.warning("Duplicate ingestion_id conflict on %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={"message": "Duplicate ingestion_id: event envelope already exists"},
+    )
+
+
+async def persistence_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Return a sanitised 500 response on storage failures without exposing DB details."""
+    logger.error("Persistence error on %s %s: %s", request.method, request.url.path, exc)
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"message": "Internal Server Error"},
+    )
+
+
+# ---------------------------------------------------------------------------
 # Request / response logging middleware
 # ---------------------------------------------------------------------------
 
