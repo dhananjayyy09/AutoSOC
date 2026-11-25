@@ -48,6 +48,10 @@ except ImportError:
                 else:
                     raise ValueError(f"Missing required field: {attr_name}")
 
+                attr_type = annotations.get(attr_name)
+                if isinstance(attr_type, type) and issubclass(attr_type, Enum) and val is not None:
+                    val = attr_type(val)
+
                 if isinstance(field_def, _FieldInfo):
                     if val is not None and field_def.ge is not None and val < field_def.ge:
                         raise ValueError(f"{attr_name} must be >= {field_def.ge}, got {val}")
