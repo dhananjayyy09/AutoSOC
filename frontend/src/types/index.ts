@@ -94,6 +94,7 @@ export interface EventIngestionResponse {
   ingestion_id: string;
   event_id?: string | null;
   status: string;
+  normalization_status?: NormalizationStatus | null;
   source?: string;
   source_type?: SecurityEventSource | string;
   possible_duplicate?: boolean;
@@ -130,6 +131,128 @@ export interface RecentEventsEnvelope {
   count?: number;
   limit?: number;
   total?: number;
+}
+
+// ---------------------------------------------------------------------------
+// Normalized Security Event Contracts (Day 7)
+// Aligned with backend/app/events/schemas.py & validation.py
+// ---------------------------------------------------------------------------
+
+/** High-level event category taxonomy (EventCategoryEnum). */
+export type EventCategory =
+  | "process"
+  | "network"
+  | "file"
+  | "registry"
+  | "auth"
+  | "alert"
+  | "unknown";
+
+/** Normalized transport/application protocol (ProtocolEnum). */
+export type EventProtocol =
+  | "tcp"
+  | "udp"
+  | "icmp"
+  | "dns"
+  | "http"
+  | "tls"
+  | "smtp"
+  | "ftp"
+  | "ssh"
+  | "rdp"
+  | "smb"
+  | "other";
+
+/**
+ * Known ingestion/normalization lifecycle statuses from backend contracts.
+ * Unknown string values are also accepted for forward compatibility.
+ */
+export type NormalizationStatus =
+  | "accepted"
+  | "accepted_with_warnings"
+  | "rejected"
+  | "unsupported"
+  | "pending"
+  | "normalized"
+  | "normalized_with_warnings"
+  | "failed"
+  | (string & {});
+
+/**
+ * Backend wire contract for GET /api/v1/events/normalized and /normalized/{event_id}.
+ * Matches backend/app/events/api_schemas.py NormalizedEventResponse (omits raw payloads).
+ */
+export interface NormalizedEventResponse {
+  event_id: string | null;
+  ingestion_id: string;
+  raw_envelope_id: number;
+  timestamp: string | null;
+  source_type: SecurityEventSource | string;
+  sensor_id: string;
+  event_category: EventCategory | string | null;
+  event_type: string | null;
+  host: string | null;
+  user?: string | null;
+  source_ip?: string | null;
+  destination_ip?: string | null;
+  source_port?: number | null;
+  destination_port?: number | null;
+  protocol?: EventProtocol | string | null;
+  process?: string | null;
+  file_hash?: string | null;
+  domain?: string | null;
+  command_line?: string | null;
+  severity?: number | null;
+  metadata: Record<string, unknown>;
+  normalization_status: NormalizationStatus;
+  normalization_errors: string[];
+  normalization_warnings: string[];
+  created_at: string;
+}
+
+/** Bounded list envelope returned by GET /api/v1/events/normalized. */
+export interface NormalizedEventsEnvelope {
+  items: NormalizedEventResponse[];
+  count: number;
+  limit: number;
+}
+
+/**
+ * Authoritative Normalized Security Event Model (v0.2.0).
+ * Used across NormalizedEventView and tests (raw_event optional when omitted by safe API).
+ */
+export interface NormalizedSecurityEvent {
+  // Core identification & classification fields (null when normalization failed/unsupported)
+  event_id: string | null;
+  ingestion_id: string;
+  raw_envelope_id?: number;
+  timestamp: string | null;
+  source: SecurityEventSource | string;
+  event_category: EventCategory | string | null;
+  event_type: string | null;
+  host: string | null;
+  severity?: number | null;
+  raw_event?: string;
+  metadata: Record<string, unknown>;
+
+  // Optional fields (null when absent)
+  user?: string | null;
+  source_ip?: string | null;
+  destination_ip?: string | null;
+  source_port?: number | null;
+  destination_port?: number | null;
+  protocol?: EventProtocol | string | null;
+  process?: string | null;
+  file_hash?: string | null;
+  domain?: string | null;
+  command_line?: string | null;
+
+  // Lifecycle metadata from retrieval endpoints
+  normalization_status?: NormalizationStatus;
+  sensor_id?: string | null;
+  warnings?: string[];
+  errors?: string[];
+  created_at?: string;
 }
 
 // ---------------------------------------------------------------------------

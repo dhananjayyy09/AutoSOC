@@ -213,6 +213,11 @@ export function EventIngestionForm({ onSuccess }: EventIngestionFormProps) {
                   <Badge variant="outline" className="border-green-500/40 text-green-300">
                     {successResult.status}
                   </Badge>
+                  {successResult.normalization_status && (
+                    <Badge variant="outline" className="border-emerald-500/40 text-emerald-300">
+                      {successResult.normalization_status}
+                    </Badge>
+                  )}
                 </div>
               </div>
               <dl className="grid gap-1 text-xs text-muted-foreground sm:grid-cols-2">

@@ -4,6 +4,8 @@ import {
   checkHealth,
   checkReadiness,
   checkSystemInfo,
+  fetchNormalizedEventById,
+  fetchNormalizedEvents,
   fetchRecentEvents,
   ingestSecurityEvent,
   isAbortError,
@@ -401,5 +403,83 @@ describe('fetchRecentEvents', () => {
     const res = await fetchRecentEvents(2)
     expect(res).toHaveLength(2)
     expect(res[0].ingestion_id).toBe('ing-1')
+  })
+})
+
+describe('fetchNormalizedEvents & fetchNormalizedEventById', () => {
+  it('maps backend NormalizedEventResponse fields into NormalizedSecurityEvent', async () => {
+    const backendBody = {
+      items: [
+        {
+          event_id: 'evt-norm-101',
+          ingestion_id: 'ing-norm-101',
+          raw_envelope_id: 7,
+          timestamp: '2026-11-25T10:00:00Z',
+          source_type: 'suricata',
+          sensor_id: 'sensor-01',
+          event_category: 'alert',
+          event_type: 'alert.ids',
+          host: 'sensor-01',
+          user: null,
+          source_ip: '192.0.2.10',
+          destination_ip: '198.51.100.42',
+          source_port: 54321,
+          destination_port: 443,
+          protocol: 'tcp',
+          process: null,
+          file_hash: null,
+          domain: 'example.invalid',
+          command_line: null,
+          severity: 4,
+          metadata: { pipeline_version: '0.2.0' },
+          normalization_status: 'normalized_with_warnings',
+          normalization_errors: [],
+          normalization_warnings: ['Invalid source_port out of range'],
+          created_at: '2026-11-25T10:00:01Z',
+        },
+      ],
+      count: 1,
+      limit: 20,
+    }
+    ;(global.fetch as jest.Mock).mockResolvedValueOnce({ ok: true, json: async () => backendBody })
+
+    const res = await fetchNormalizedEvents(20)
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://localhost:8000/api/v1/events/normalized?limit=20',
+      expect.objectContaining({ method: 'GET' })
+    )
+    expect(res).toHaveLength(1)
+    expect(res[0].source).toBe('suricata')
+    expect(res[0].normalization_status).toBe('normalized_with_warnings')
+    expect(res[0].warnings).toEqual(['Invalid source_port out of range'])
+  })
+
+  it('fetches single normalized event by event_id', async () => {
+    const backendItem = {
+      event_id: 'evt-norm-202',
+      ingestion_id: 'ing-norm-202',
+      raw_envelope_id: 8,
+      timestamp: '2026-11-25T10:05:00Z',
+      source_type: 'zeek',
+      sensor_id: 'zeek-01',
+      event_category: 'network',
+      event_type: 'network.dns',
+      host: 'zeek-01',
+      severity: 1,
+      metadata: {},
+      normalization_status: 'normalized',
+      normalization_errors: [],
+      normalization_warnings: [],
+      created_at: '2026-11-25T10:05:01Z',
+    }
+    ;(global.fetch as jest.Mock).mockResolvedValueOnce({ ok: true, json: async () => backendItem })
+
+    const res = await fetchNormalizedEventById('evt-norm-202')
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://localhost:8000/api/v1/events/normalized/evt-norm-202',
+      expect.objectContaining({ method: 'GET' })
+    )
+    expect(res.event_id).toBe('evt-norm-202')
+    expect(res.source).toBe('zeek')
   })
 })

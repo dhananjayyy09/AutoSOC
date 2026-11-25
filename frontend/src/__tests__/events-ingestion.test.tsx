@@ -2,7 +2,13 @@ import React from 'react'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { EventIngestionForm, RecentEventsList } from '@/features/events'
 import EventsPage from '@/app/(dashboard)/events/page'
-import { ApiError, fetchRecentEvents, ingestSecurityEvent } from '@/lib/api'
+import {
+  ApiError,
+  fetchNormalizedEventById,
+  fetchNormalizedEvents,
+  fetchRecentEvents,
+  ingestSecurityEvent,
+} from '@/lib/api'
 
 // Mock API functions only — clearly isolated unit tests (no live backend)
 jest.mock('@/lib/api', () => {
@@ -11,14 +17,19 @@ jest.mock('@/lib/api', () => {
     ...actual,
     ingestSecurityEvent: jest.fn(),
     fetchRecentEvents: jest.fn(),
+    fetchNormalizedEvents: jest.fn(),
+    fetchNormalizedEventById: jest.fn(),
   }
 })
 
 const mockedIngest = ingestSecurityEvent as jest.MockedFunction<typeof ingestSecurityEvent>
 const mockedFetchRecent = fetchRecentEvents as jest.MockedFunction<typeof fetchRecentEvents>
+const mockedFetchNormalized = fetchNormalizedEvents as jest.MockedFunction<typeof fetchNormalizedEvents>
+const mockedFetchNormalizedById = fetchNormalizedEventById as jest.MockedFunction<typeof fetchNormalizedEventById>
 
 beforeEach(() => {
   jest.clearAllMocks()
+  mockedFetchNormalized.mockResolvedValue([])
 })
 
 // ---------------------------------------------------------------------------
@@ -112,6 +123,20 @@ describe('EventIngestionForm (mocked API)', () => {
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent('Network Error')
     expect(alert).toHaveTextContent(/unable to reach the ingestion backend/i)
+  })
+
+  it('displays duplicate ingestion_id 409 error and possible_duplicate badge cleanly', async () => {
+    mockedIngest.mockRejectedValueOnce(new ApiError(409, 'Conflict'))
+
+    render(<EventIngestionForm />)
+    fireEvent.change(screen.getByLabelText(/event payload \(json\)/i), {
+      target: { value: '{"ingestion_id":"dup-1"}' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /submit event/i }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('Duplicate Event')
+    expect(alert).toHaveTextContent(/duplicate ingestion id/i)
   })
 
   it('clears input and messages when Clear is clicked', async () => {
@@ -252,5 +277,70 @@ describe('EventsPage (mocked API)', () => {
       expect(screen.getAllByText('ing-new').length).toBeGreaterThanOrEqual(2)
     })
     expect(mockedFetchRecent).toHaveBeenCalledTimes(2)
+  })
+
+  it('lets the user inspect a recent event in NormalizedEventView', async () => {
+    mockedFetchRecent.mockResolvedValueOnce([
+      {
+        ingestion_id: 'ing-select-1',
+        source_type: 'sysmon',
+        sensor_id: 'sensor-01',
+        ingest_time: '2026-11-25T10:00:00Z',
+        raw_payload_preview: '<Event>sample</Event>',
+        status: 'accepted',
+      },
+    ])
+
+    render(<EventsPage />)
+
+    const inspectBtn = await screen.findByRole('button', { name: /inspect event ing-select-1/i })
+    fireEvent.click(inspectBtn)
+
+    expect(await screen.findByText('Normalized event not available yet')).toBeInTheDocument()
+    expect(screen.getByText('<Event>sample</Event>')).toBeInTheDocument()
+  })
+
+  it('loads and renders normalized event details when selecting a recent event', async () => {
+    mockedFetchRecent.mockResolvedValueOnce([
+      {
+        ingestion_id: 'ing-norm-1',
+        source_type: 'suricata',
+        sensor_id: 'sensor-edge-01',
+        ingest_time: '2026-11-25T10:00:00Z',
+        raw_payload_preview: '{"event_type":"alert"}',
+        status: 'accepted',
+      },
+    ])
+    mockedFetchNormalized.mockResolvedValueOnce([
+      {
+        event_id: 'evt-norm-1',
+        ingestion_id: 'ing-norm-1',
+        timestamp: '2026-11-25T09:59:59Z',
+        source: 'suricata',
+        event_category: 'alert',
+        event_type: 'alert.ids',
+        host: 'sensor-edge-01',
+        severity: 4,
+        metadata: {},
+        source_ip: '192.0.2.10',
+        destination_ip: '198.51.100.42',
+        destination_port: 443,
+        protocol: 'tcp',
+        normalization_status: 'normalized_with_warnings',
+        warnings: ["Unrecognized protocol 'sctp'; mapped to 'other'"],
+        errors: [],
+      },
+    ])
+
+    render(<EventsPage />)
+
+    const inspectBtn = await screen.findByRole('button', { name: /inspect event ing-norm-1/i })
+    fireEvent.click(inspectBtn)
+
+    expect(await screen.findByText('evt-norm-1')).toBeInTheDocument()
+    expect(screen.getByText('Normalized with Warnings')).toBeInTheDocument()
+    expect(screen.getByText('HIGH')).toBeInTheDocument()
+    expect(screen.getByText('198.51.100.42:443')).toBeInTheDocument()
+    expect(mockedFetchNormalizedById).not.toHaveBeenCalled()
   })
 })
