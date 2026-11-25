@@ -126,6 +126,33 @@ describe('EventIngestionForm (mocked API)', () => {
     expect(textarea).toHaveValue('')
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
+
+  it('renders Duplicate Event alert on 409 Conflict and duplicate badge when possible_duplicate is true', async () => {
+    mockedIngest.mockRejectedValueOnce(new ApiError(409, 'Conflict'))
+
+    render(<EventIngestionForm />)
+    fireEvent.change(screen.getByLabelText(/event payload \(json\)/i), {
+      target: { value: '{"ingestion_id":"11111111-1111-4111-8111-111111111111"}' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /submit event/i }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('Duplicate Event')
+    expect(alert).toHaveTextContent(/duplicate ingestion id/i)
+
+    mockedIngest.mockResolvedValueOnce({
+      ingestion_id: 'ing-dup-hash',
+      source_type: 'sysmon',
+      status: 'accepted',
+      possible_duplicate: true,
+      received_at: '2026-11-25T10:15:00Z',
+    })
+    fireEvent.click(screen.getByRole('button', { name: /submit event/i }))
+
+    const statusBanner = await screen.findByRole('status')
+    expect(statusBanner).toHaveTextContent('duplicate raw_hash')
+    expect(statusBanner).toHaveTextContent('2026-11-25T10:15:00Z')
+  })
 })
 
 // ---------------------------------------------------------------------------

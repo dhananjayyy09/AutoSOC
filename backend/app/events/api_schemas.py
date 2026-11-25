@@ -86,11 +86,15 @@ class EventIngestionResponse(BaseModel):
 
     ingestion_id: str = Field(description="Unique delivery attempt UUID from envelope")
     source_type: SourceTypeEnum = Field(description="Validated telemetry source type")
-    status: str = Field(description="Processing disposition status (accepted)")
+    status: str = Field(description="Processing disposition status (accepted or accepted_with_warnings)")
     possible_duplicate: bool = Field(
         description="True if an identical raw_hash was previously ingested"
     )
     received_at: str = Field(description="ISO 8601 UTC timestamp of persistence")
+    warnings: List[str] = Field(
+        default_factory=list,
+        description="Non-blocking validation warnings (never contains raw payloads)",
+    )
 
 
 class IngestedEventSummary(BaseModel):

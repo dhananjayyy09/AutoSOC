@@ -33,7 +33,9 @@ class EventPersistenceError(Exception):
 
 
 async def persist_raw_envelope(
-    session: AsyncSession, envelope: IngestionEnvelope
+    session: AsyncSession,
+    envelope: IngestionEnvelope,
+    processing_status: str = "accepted",
 ) -> RawEventEnvelope:
     """
     Persist a validated IngestionEnvelope to PostgreSQL.
@@ -78,7 +80,7 @@ async def persist_raw_envelope(
             raw_payload=envelope.raw_payload,
             payload_size_bytes=payload_bytes,
             possible_duplicate=is_possible_duplicate,
-            processing_status="accepted",
+            processing_status=processing_status,
         )
 
         session.add(record)

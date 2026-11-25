@@ -91,8 +91,8 @@ export function RecentEventsList({
             <TableBody>
               {events.map((evt) => {
                 const sourceLabel = evt.source || evt.source_type
-                const sourceAndType = [sourceLabel, evt.event_type].filter(Boolean).join(" / ") || "—"
-                const timestampLabel = evt.ingest_time || evt.timestamp || "—"
+                const sourceAndType = [sourceLabel, evt.event_type || evt.sensor_id].filter(Boolean).join(" / ") || "—"
+                const timestampLabel = evt.ingest_time || evt.timestamp || evt.received_at || "—"
 
                 return (
                   <TableRow key={evt.ingestion_id}>
@@ -101,7 +101,14 @@ export function RecentEventsList({
                     <TableCell className="text-xs">{sourceAndType}</TableCell>
                     <TableCell className="font-mono text-xs">{timestampLabel}</TableCell>
                     <TableCell>
-                      <Badge variant="outline">{evt.status}</Badge>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <Badge variant="outline">{evt.status}</Badge>
+                        {evt.possible_duplicate && (
+                          <Badge variant="outline" className="border-amber-500/40 text-amber-300">
+                            duplicate
+                          </Badge>
+                        )}
+                      </div>
                     </TableCell>
                   </TableRow>
                 )

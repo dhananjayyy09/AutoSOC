@@ -92,7 +92,12 @@ export function EventIngestionForm({ onSuccess }: EventIngestionFormProps) {
       if (err instanceof ApiError) {
         const fieldErrors = err.validationErrors
         setSubmissionError({
-          title: err.status === 422 ? "Validation Error" : `Request Failed (HTTP ${err.status})`,
+          title:
+            err.status === 422
+              ? "Validation Error"
+              : err.status === 409
+                ? "Duplicate Event"
+                : `Request Failed (HTTP ${err.status})`,
           message: err.userMessage,
           fieldErrors: fieldErrors.length > 0 ? fieldErrors : undefined,
         })
@@ -143,7 +148,7 @@ export function EventIngestionForm({ onSuccess }: EventIngestionFormProps) {
               disabled={isSubmitting}
               aria-invalid={hasInputError}
               aria-describedby={hasInputError ? errorId : "event-json-hint"}
-              placeholder={'{\n  "source_type": "sysmon",\n  "sensor_id": "sensor-01",\n  "raw_payload": "..."\n}'}
+              placeholder={'{\n  "ingestion_id": "11111111-1111-4111-8111-111111111111",\n  "source_type": "sysmon",\n  "sensor_id": "sensor-01",\n  "ingest_time": "2026-11-25T10:00:00Z",\n  "raw_hash": "sha256:...",\n  "raw_payload": "<Event>...</Event>"\n}'}
               className="flex min-h-[200px] w-full rounded-md border border-input bg-background px-3 py-2 font-mono text-sm leading-relaxed shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
             />
             <p id="event-json-hint" className="text-xs text-muted-foreground">
@@ -194,35 +199,57 @@ export function EventIngestionForm({ onSuccess }: EventIngestionFormProps) {
               aria-live="polite"
               className="space-y-2 rounded-md border border-green-500/30 bg-green-500/10 p-3 text-sm text-green-400"
             >
-              <div className="flex items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2 font-medium">
                   <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />
                   <span>Event Accepted for Ingestion</span>
                 </div>
-                <Badge variant="outline" className="border-green-500/40 text-green-300">
-                  {successResult.status}
-                </Badge>
+                <div className="flex items-center gap-2">
+                  {successResult.possible_duplicate && (
+                    <Badge variant="outline" className="border-amber-500/40 text-amber-300">
+                      duplicate raw_hash
+                    </Badge>
+                  )}
+                  <Badge variant="outline" className="border-green-500/40 text-green-300">
+                    {successResult.status}
+                  </Badge>
+                </div>
               </div>
               <dl className="grid gap-1 text-xs text-muted-foreground sm:grid-cols-2">
                 <div>
                   <dt className="inline font-medium text-foreground">Ingestion ID: </dt>
                   <dd className="inline font-mono">{successResult.ingestion_id}</dd>
                 </div>
+                {successResult.source_type && (
+                  <div>
+                    <dt className="inline font-medium text-foreground">Source Type: </dt>
+                    <dd className="inline font-mono">{successResult.source_type}</dd>
+                  </div>
+                )}
                 {successResult.event_id && (
                   <div>
                     <dt className="inline font-medium text-foreground">Event ID: </dt>
                     <dd className="inline font-mono">{successResult.event_id}</dd>
                   </div>
                 )}
-                {(successResult.ingest_time || successResult.timestamp) && (
+                {(successResult.received_at || successResult.ingest_time || successResult.timestamp) && (
                   <div>
-                    <dt className="inline font-medium text-foreground">Ingest Time: </dt>
+                    <dt className="inline font-medium text-foreground">
+                      {successResult.received_at ? "Received At: " : "Ingest Time: "}
+                    </dt>
                     <dd className="inline font-mono">
-                      {successResult.ingest_time || successResult.timestamp}
+                      {successResult.received_at || successResult.ingest_time || successResult.timestamp}
                     </dd>
                   </div>
                 )}
               </dl>
+              {successResult.warnings && successResult.warnings.length > 0 && (
+                <ul className="ml-5 list-disc space-y-0.5 text-xs text-amber-300">
+                  {successResult.warnings.map((warning, idx) => (
+                    <li key={idx}>{warning}</li>
+                  ))}
+                </ul>
+              )}
               {successResult.message && (
                 <p className="text-xs text-muted-foreground">{successResult.message}</p>
               )}

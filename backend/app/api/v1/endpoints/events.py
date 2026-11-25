@@ -2,23 +2,31 @@
 AutoSOC API v1 - Security Event Ingestion and Retrieval Endpoints
 
 Exposes minimal, contract-validated endpoints for accepting raw IngestionEnvelopes
-into PostgreSQL and retrieving bounded recent ingestion summaries.
+into PostgreSQL (using Pranjal's ingestion validation service) and retrieving
+bounded recent ingestion summaries.
 """
 
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, Query, status
+from typing import Any, Dict
+
+from fastapi import APIRouter, Body, Depends, Query, status
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.events.api_schemas import (
-    EventIngestionRequest,
     EventIngestionResponse,
     IngestedEventListResponse,
     IngestedEventSummary,
     build_payload_preview,
 )
 from app.events.repository import list_recent_envelopes, persist_raw_envelope
-from app.events.schemas import SourceTypeEnum
+from app.events.schemas import IngestionEnvelope, SourceTypeEnum
+from app.events.validation import (
+    MAX_RAW_PAYLOAD_BYTES,
+    ValidationErrorCategory,
+    validate_ingestion_envelope,
+)
 
 router = APIRouter()
 
@@ -34,22 +42,75 @@ def _format_utc_iso(dt: datetime) -> str:
     status_code=status.HTTP_201_CREATED,
     response_model=EventIngestionResponse,
     summary="Ingest Raw Security Event Envelope",
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/json": {
+                    "schema": IngestionEnvelope.model_json_schema()
+                }
+            },
+        }
+    },
 )
 async def ingest_event_envelope(
-    envelope: EventIngestionRequest,
+    payload: Dict[str, Any] = Body(...),
     db: AsyncSession = Depends(get_db),
-) -> EventIngestionResponse:
+) -> Any:
     """
     Accept a raw security-event envelope conforming to the IngestionEnvelope contract,
-    validate all required fields, and persist it unmodified in PostgreSQL.
+    validate it via the security ingestion validation service, and persist it
+    unmodified in PostgreSQL.
     """
-    record = await persist_raw_envelope(db, envelope)
+    validation_result = validate_ingestion_envelope(payload)
+
+    if not validation_result.valid or validation_result.envelope is None:
+        errors = [
+            {
+                "field": (
+                    issue.field
+                    if issue.field.startswith("body")
+                    else f"body -> {issue.field}"
+                ),
+                "message": issue.message,
+                "type": issue.category.value,
+            }
+            for issue in validation_result.errors
+        ]
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={"message": "Validation error", "errors": errors},
+        )
+
+    # Raw storage preserves unmodified payloads up to 64 KiB; until truncation-on-ingest
+    # is persisted with a raw_truncated column, reject oversized payloads at the API boundary.
+    if validation_result.raw_truncated:
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={
+                "message": "Validation error",
+                "errors": [
+                    {
+                        "field": "body -> raw_payload",
+                        "message": f"raw_payload exceeds maximum size of {MAX_RAW_PAYLOAD_BYTES} bytes",
+                        "type": ValidationErrorCategory.PAYLOAD_TRUNCATED.value,
+                    }
+                ],
+            },
+        )
+
+    record = await persist_raw_envelope(
+        db,
+        validation_result.envelope,
+        processing_status=validation_result.disposition.value,
+    )
     return EventIngestionResponse(
         ingestion_id=record.ingestion_id,
         source_type=SourceTypeEnum(record.source_type),
         status=record.processing_status,
         possible_duplicate=record.possible_duplicate,
         received_at=_format_utc_iso(record.received_at),
+        warnings=[w.message for w in validation_result.warnings],
     )
 
 

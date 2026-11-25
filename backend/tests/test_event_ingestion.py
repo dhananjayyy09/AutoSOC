@@ -30,6 +30,7 @@ from app.events.repository import (
     persist_raw_envelope,
 )
 from app.events.schemas import IngestionEnvelope, SourceTypeEnum
+from app.events.validation import compute_raw_hash
 
 
 def _valid_envelope_payload(
@@ -37,7 +38,7 @@ def _valid_envelope_payload(
     source_type: str = "sysmon",
     sensor_id: str = "sensor-win-01",
     ingest_time: str = "2026-11-25T10:00:00Z",
-    raw_hash: str = "sha256:" + "a" * 64,
+    raw_hash: Optional[str] = None,
     raw_payload: str = "<Event><System><EventID>1</EventID></System></Event>",
 ) -> Dict[str, Any]:
     return {
@@ -45,7 +46,7 @@ def _valid_envelope_payload(
         "source_type": source_type,
         "sensor_id": sensor_id,
         "ingest_time": ingest_time,
-        "raw_hash": raw_hash,
+        "raw_hash": raw_hash if raw_hash is not None else compute_raw_hash(raw_payload),
         "raw_payload": raw_payload,
     }
 
@@ -207,7 +208,7 @@ def test_ingest_invalid_uuid_and_hash_and_timestamp_returns_422(fake_db):
 
 def test_ingest_empty_or_oversized_raw_payload_returns_422_without_leaking_payload(fake_db):
     empty_payload = _valid_envelope_payload(raw_payload="")
-    oversized_secret = "SENSITIVE_SECRET_" + ("X" * 65_540)
+    oversized_secret = "<Event>SENSITIVE_SECRET_" + ("X" * 65_540) + "</Event>"
     oversized_payload = _valid_envelope_payload(raw_payload=oversized_secret)
 
     r_empty = client.post("/api/v1/events/ingest", json=empty_payload)
@@ -217,6 +218,35 @@ def test_ingest_empty_or_oversized_raw_payload_returns_422_without_leaking_paylo
     assert r_large.status_code == 422
     assert "SENSITIVE_SECRET" not in r_large.text
     assert len(fake_db.rows) == 0
+
+
+def test_ingest_hash_mismatch_and_unsupported_custom_rejected_422(fake_db):
+    mismatch_payload = _valid_envelope_payload(raw_hash="sha256:" + ("0" * 64))
+    r_mismatch = client.post("/api/v1/events/ingest", json=mismatch_payload)
+    assert r_mismatch.status_code == 422
+    assert r_mismatch.json()["errors"][0]["type"] == "hash_mismatch"
+
+    custom_payload = _valid_envelope_payload(source_type="custom", raw_payload="raw custom line")
+    r_custom = client.post("/api/v1/events/ingest", json=custom_payload)
+    assert r_custom.status_code == 422
+    assert r_custom.json()["errors"][0]["type"] == "unsupported_source_type"
+
+    bad_sysmon = _valid_envelope_payload(source_type="sysmon", raw_payload="not xml payload")
+    r_sysmon = client.post("/api/v1/events/ingest", json=bad_sysmon)
+    assert r_sysmon.status_code == 422
+    assert r_sysmon.json()["errors"][0]["type"] == "malformed_payload"
+
+
+def test_ingest_future_skew_returns_201_accepted_with_warnings(fake_db):
+    future_ts = (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat().replace("+00:00", "Z")
+    payload = _valid_envelope_payload(ingest_time=future_ts)
+    resp = client.post("/api/v1/events/ingest", json=payload)
+
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["status"] == "accepted_with_warnings"
+    assert len(body["warnings"]) == 1
+    assert "skew tolerance" in body["warnings"][0]
 
 
 # ---------------------------------------------------------------------------
@@ -239,14 +269,17 @@ def test_duplicate_ingestion_id_returns_409_conflict(fake_db):
 
 
 def test_duplicate_raw_hash_with_new_ingestion_id_is_flagged_and_stored(fake_db):
-    shared_hash = "sha256:" + "b" * 64
+    shared_payload = "<Event><System><EventID>4624</EventID></System></Event>"
+    shared_hash = compute_raw_hash(shared_payload)
     p1 = _valid_envelope_payload(
         ingestion_id="33333333-3333-4333-8333-333333333331",
         raw_hash=shared_hash,
+        raw_payload=shared_payload,
     )
     p2 = _valid_envelope_payload(
         ingestion_id="33333333-3333-4333-8333-333333333332",
         raw_hash=shared_hash,
+        raw_payload=shared_payload,
     )
 
     r1 = client.post("/api/v1/events/ingest", json=p1)

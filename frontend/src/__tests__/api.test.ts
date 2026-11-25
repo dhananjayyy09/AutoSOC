@@ -41,8 +41,8 @@ describe('ApiError', () => {
   })
 
   it('should produce a generic user message for other codes', () => {
-    const err = new ApiError(409, 'Conflict')
-    expect(err.userMessage).toMatch(/HTTP 409/i)
+    const err = new ApiError(418, "I'm a teapot")
+    expect(err.userMessage).toMatch(/HTTP 418/i)
   })
 })
 
@@ -315,6 +315,13 @@ describe('ApiError 422 validationErrors', () => {
       { field: 'body -> source_type', message: 'Field required', type: 'missing' },
     ])
   })
+
+  it('returns duplicate userMessage for 409 Conflict', () => {
+    const err = new ApiError(409, 'Conflict', {
+      message: 'Duplicate ingestion_id: event envelope already exists',
+    })
+    expect(err.userMessage).toMatch(/duplicate ingestion id/i)
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -341,19 +348,46 @@ describe('ingestSecurityEvent', () => {
 })
 
 describe('fetchRecentEvents', () => {
-  it('fetches bounded recent events from array response', async () => {
-    const rows = [
-      { ingestion_id: 'ing-1', status: 'accepted', source: 'sysmon' },
-      { ingestion_id: 'ing-2', status: 'accepted', source: 'zeek' },
-    ]
-    ;(global.fetch as jest.Mock).mockResolvedValueOnce({ ok: true, json: async () => rows })
+  it('fetches bounded recent events from canonical backend items envelope', async () => {
+    const backendBody = {
+      items: [
+        {
+          ingestion_id: 'ing-1',
+          source_type: 'sysmon',
+          sensor_id: 'sensor-01',
+          ingest_time: '2026-11-25T10:00:00Z',
+          raw_hash: 'sha256:' + 'a'.repeat(64),
+          payload_size_bytes: 52,
+          raw_payload_preview: '<Event />',
+          possible_duplicate: false,
+          status: 'accepted',
+          received_at: '2026-11-25T10:00:01Z',
+        },
+        {
+          ingestion_id: 'ing-2',
+          source_type: 'zeek',
+          sensor_id: 'sensor-02',
+          ingest_time: '2026-11-25T10:01:00Z',
+          raw_hash: 'sha256:' + 'b'.repeat(64),
+          payload_size_bytes: 40,
+          raw_payload_preview: '{"uid":"123"}',
+          possible_duplicate: true,
+          status: 'accepted',
+          received_at: '2026-11-25T10:01:01Z',
+        },
+      ],
+      count: 2,
+      limit: 10,
+    }
+    ;(global.fetch as jest.Mock).mockResolvedValueOnce({ ok: true, json: async () => backendBody })
 
     const res = await fetchRecentEvents(10)
     expect(global.fetch).toHaveBeenCalledWith(
-      'http://localhost:8000/api/v1/events?limit=10',
+      'http://localhost:8000/api/v1/events/ingested?limit=10',
       expect.objectContaining({ method: 'GET' })
     )
     expect(res).toHaveLength(2)
+    expect(res[1].possible_duplicate).toBe(true)
   })
 
   it('normalizes { events: [...] } envelope and enforces limit', async () => {

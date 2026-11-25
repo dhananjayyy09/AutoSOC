@@ -95,28 +95,40 @@ export interface EventIngestionResponse {
   event_id?: string | null;
   status: string;
   source?: string;
+  source_type?: SecurityEventSource | string;
+  possible_duplicate?: boolean;
+  received_at?: string;
+  warnings?: string[];
   event_type?: string;
   ingest_time?: string;
   timestamp?: string;
   message?: string;
 }
 
-/** Recent ingested event record returned by the retrieval endpoint. */
+/** Recent ingested event record returned by GET /api/v1/events/ingested. */
 export interface IngestedEventRecord {
   ingestion_id: string;
   event_id?: string | null;
   source?: string;
-  source_type?: string;
+  source_type?: SecurityEventSource | string;
+  sensor_id?: string;
   event_type?: string;
   timestamp?: string;
   ingest_time?: string;
+  raw_hash?: string;
+  payload_size_bytes?: number;
+  raw_payload_preview?: string;
+  possible_duplicate?: boolean;
+  received_at?: string;
   status: string;
 }
 
-/** Envelope shapes supported by GET /api/v1/events. */
+/** Envelope shapes supported by GET /api/v1/events/ingested. */
 export interface RecentEventsEnvelope {
   events?: IngestedEventRecord[];
   items?: IngestedEventRecord[];
+  count?: number;
+  limit?: number;
   total?: number;
 }
 

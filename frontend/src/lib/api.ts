@@ -60,6 +60,7 @@ export class ApiError extends Error {
     if (this.status === 503) return "One or more backend services are currently unavailable.";
     if (this.status >= 500) return "The server encountered an unexpected error. Please try again later.";
     if (this.status === 422) return "The submitted payload failed validation. Please review your input and try again.";
+    if (this.status === 409) return "Duplicate ingestion ID: an event envelope with this ingestion_id already exists.";
     if (this.status === 404) return "The requested endpoint or resource was not found.";
     if (this.status === 401 || this.status === 403) return "You do not have permission to perform this action.";
     return `Unexpected error (HTTP ${this.status}).`;
@@ -298,7 +299,7 @@ export const checkSystemInfo = async (): Promise<{
 // ---------------------------------------------------------------------------
 
 export const EVENT_INGEST_ENDPOINT = "/api/v1/events/ingest";
-export const EVENTS_LIST_ENDPOINT = "/api/v1/events";
+export const EVENTS_LIST_ENDPOINT = "/api/v1/events/ingested";
 export const DEFAULT_RECENT_EVENTS_LIMIT = 20;
 
 /**
@@ -316,8 +317,8 @@ export const ingestSecurityEvent = async (
 };
 
 /**
- * Retrieves recent ingested events from GET /api/v1/events with bounded limit.
- * Normalizes array or enveloped ({ events } / { items }) responses without
+ * Retrieves recent ingested events from GET /api/v1/events/ingested with bounded limit.
+ * Normalizes array or enveloped ({ items } / { events }) responses without
  * fabricating missing records.
  */
 export const fetchRecentEvents = async (

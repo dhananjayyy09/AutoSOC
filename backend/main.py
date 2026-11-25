@@ -12,6 +12,7 @@ from app.core.exceptions import (
     not_found_handler,
     duplicate_ingestion_handler,
     persistence_exception_handler,
+    
     RequestLoggingMiddleware,
 )
 from app.events.repository import DuplicateIngestionIdError, EventPersistenceError
