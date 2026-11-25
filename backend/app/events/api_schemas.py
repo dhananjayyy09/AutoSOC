@@ -1,0 +1,132 @@
+"""
+AutoSOC - API Request and Response Schemas for Security Event Ingestion
+
+Extends the authoritative IngestionEnvelope contract (app.events.schemas) with
+boundary format validation and defines safe response models for ingestion and
+bounded retrieval endpoints.
+"""
+
+import re
+from datetime import datetime
+from typing import List
+from uuid import UUID
+
+from pydantic import BaseModel, Field, field_validator
+
+from app.events.schemas import IngestionEnvelope, SourceTypeEnum
+
+MAX_RAW_PAYLOAD_BYTES = 65_536  # 64 KiB per Security Data Contract §3 Stage 1
+RAW_HASH_PATTERN = re.compile(r"^sha256:[0-9a-fA-F]{64}$")
+PREVIEW_MAX_CHARS = 256
+
+
+class EventIngestionRequest(IngestionEnvelope):
+    """
+    HTTP ingestion payload validated against the authoritative IngestionEnvelope
+    contract with strict field-format checks. Does not invent a separate contract.
+    """
+
+    @field_validator("ingestion_id")
+    @classmethod
+    def validate_ingestion_id(cls, value: str) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("ingestion_id must be a non-empty UUID string")
+        try:
+            UUID(value)
+        except ValueError as exc:
+            raise ValueError("ingestion_id must be a valid UUID") from exc
+        return value
+
+    @field_validator("sensor_id")
+    @classmethod
+    def validate_sensor_id(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("sensor_id must not be empty")
+        if len(stripped) > 255:
+            raise ValueError("sensor_id must not exceed 255 characters")
+        return stripped
+
+    @field_validator("ingest_time")
+    @classmethod
+    def validate_ingest_time(cls, value: str) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("ingest_time must be a non-empty ISO 8601 timestamp")
+        try:
+            normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+            parsed = datetime.fromisoformat(normalized)
+        except ValueError as exc:
+            raise ValueError("ingest_time must be a valid ISO 8601 timestamp") from exc
+        if parsed.tzinfo is None:
+            raise ValueError("ingest_time must include UTC/timezone offset")
+        return value
+
+    @field_validator("raw_hash")
+    @classmethod
+    def validate_raw_hash(cls, value: str) -> str:
+        if not RAW_HASH_PATTERN.match(value):
+            raise ValueError("raw_hash must match format 'sha256:<64 hex chars>'")
+        return value.lower()
+
+    @field_validator("raw_payload")
+    @classmethod
+    def validate_raw_payload(cls, value: str) -> str:
+        if not value:
+            raise ValueError("raw_payload must not be empty")
+        if len(value.encode("utf-8")) > MAX_RAW_PAYLOAD_BYTES:
+            # Never echo raw_payload content in validation error messages
+            raise ValueError(
+                f"raw_payload exceeds maximum size of {MAX_RAW_PAYLOAD_BYTES} bytes"
+            )
+        return value
+
+
+class EventIngestionResponse(BaseModel):
+    """Stable acknowledgement returned upon persisting a raw security-event envelope."""
+
+    ingestion_id: str = Field(description="Unique delivery attempt UUID from envelope")
+    source_type: SourceTypeEnum = Field(description="Validated telemetry source type")
+    status: str = Field(description="Processing disposition status (accepted or accepted_with_warnings)")
+    possible_duplicate: bool = Field(
+        description="True if an identical raw_hash was previously ingested"
+    )
+    received_at: str = Field(description="ISO 8601 UTC timestamp of persistence")
+    warnings: List[str] = Field(
+        default_factory=list,
+        description="Non-blocking validation warnings (never contains raw payloads)",
+    )
+
+
+class IngestedEventSummary(BaseModel):
+    """
+    Safe, bounded representation of a persisted raw event envelope for retrieval.
+    Avoids returning unbounded raw_payload strings in list responses.
+    """
+
+    ingestion_id: str
+    source_type: SourceTypeEnum
+    sensor_id: str
+    ingest_time: str
+    raw_hash: str
+    payload_size_bytes: int
+    raw_payload_preview: str = Field(
+        description="Bounded preview of raw_payload (max 256 chars + ellipsis)"
+    )
+    possible_duplicate: bool
+    status: str
+    received_at: str
+
+
+class IngestedEventListResponse(BaseModel):
+    """Paginated/bounded list of recently ingested raw event envelopes."""
+
+    items: List[IngestedEventSummary]
+    count: int
+    limit: int
+
+
+def build_payload_preview(raw_payload: str, max_chars: int = PREVIEW_MAX_CHARS) -> str:
+    """Return a bounded preview of raw_payload for safe list retrieval."""
+    if len(raw_payload) <= max_chars:
+        return raw_payload
+    return raw_payload[:max_chars] + "..."

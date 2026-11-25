@@ -4,6 +4,8 @@ import {
   checkHealth,
   checkReadiness,
   checkSystemInfo,
+  fetchRecentEvents,
+  ingestSecurityEvent,
   isAbortError,
   isNetworkError,
 } from '@/lib/api'
@@ -39,8 +41,8 @@ describe('ApiError', () => {
   })
 
   it('should produce a generic user message for other codes', () => {
-    const err = new ApiError(422, 'Unprocessable Entity')
-    expect(err.userMessage).toMatch(/HTTP 422/i)
+    const err = new ApiError(418, "I'm a teapot")
+    expect(err.userMessage).toMatch(/HTTP 418/i)
   })
 })
 
@@ -296,5 +298,108 @@ describe('checkSystemInfo', () => {
 
     const result = await checkSystemInfo()
     expect(result.status).toBe('unavailable')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// ApiError 422 & validationErrors
+// ---------------------------------------------------------------------------
+describe('ApiError 422 validationErrors', () => {
+  it('returns validation userMessage and extracts field errors', () => {
+    const err = new ApiError(422, 'Unprocessable Entity', {
+      message: 'Validation error',
+      errors: [{ field: 'body -> source_type', message: 'Field required', type: 'missing' }],
+    })
+    expect(err.userMessage).toMatch(/failed validation/i)
+    expect(err.validationErrors).toEqual([
+      { field: 'body -> source_type', message: 'Field required', type: 'missing' },
+    ])
+  })
+
+  it('returns duplicate userMessage for 409 Conflict', () => {
+    const err = new ApiError(409, 'Conflict', {
+      message: 'Duplicate ingestion_id: event envelope already exists',
+    })
+    expect(err.userMessage).toMatch(/duplicate ingestion id/i)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// ingestSecurityEvent & fetchRecentEvents (mocked fetch)
+// ---------------------------------------------------------------------------
+describe('ingestSecurityEvent', () => {
+  it('posts payload to /api/v1/events/ingest and returns ingestion response', async () => {
+    const mockRes = { ingestion_id: 'ing-123', event_id: 'evt-456', status: 'accepted' }
+    ;(global.fetch as jest.Mock).mockResolvedValueOnce({ ok: true, json: async () => mockRes })
+
+    const res = await ingestSecurityEvent({ source_type: 'sysmon', raw_payload: '{}' })
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://localhost:8000/api/v1/events/ingest',
+      expect.objectContaining({ method: 'POST' })
+    )
+    expect(res).toEqual(mockRes)
+  })
+
+  it('throws on malformed ingestion response without ingestion_id', async () => {
+    ;(global.fetch as jest.Mock).mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) })
+
+    await expect(ingestSecurityEvent({ source_type: 'sysmon' })).rejects.toThrow(/malformed response/i)
+  })
+})
+
+describe('fetchRecentEvents', () => {
+  it('fetches bounded recent events from canonical backend items envelope', async () => {
+    const backendBody = {
+      items: [
+        {
+          ingestion_id: 'ing-1',
+          source_type: 'sysmon',
+          sensor_id: 'sensor-01',
+          ingest_time: '2026-11-25T10:00:00Z',
+          raw_hash: 'sha256:' + 'a'.repeat(64),
+          payload_size_bytes: 52,
+          raw_payload_preview: '<Event />',
+          possible_duplicate: false,
+          status: 'accepted',
+          received_at: '2026-11-25T10:00:01Z',
+        },
+        {
+          ingestion_id: 'ing-2',
+          source_type: 'zeek',
+          sensor_id: 'sensor-02',
+          ingest_time: '2026-11-25T10:01:00Z',
+          raw_hash: 'sha256:' + 'b'.repeat(64),
+          payload_size_bytes: 40,
+          raw_payload_preview: '{"uid":"123"}',
+          possible_duplicate: true,
+          status: 'accepted',
+          received_at: '2026-11-25T10:01:01Z',
+        },
+      ],
+      count: 2,
+      limit: 10,
+    }
+    ;(global.fetch as jest.Mock).mockResolvedValueOnce({ ok: true, json: async () => backendBody })
+
+    const res = await fetchRecentEvents(10)
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://localhost:8000/api/v1/events/ingested?limit=10',
+      expect.objectContaining({ method: 'GET' })
+    )
+    expect(res).toHaveLength(2)
+    expect(res[1].possible_duplicate).toBe(true)
+  })
+
+  it('normalizes { events: [...] } envelope and enforces limit', async () => {
+    const rows = [
+      { ingestion_id: 'ing-1', status: 'accepted' },
+      { ingestion_id: 'ing-2', status: 'accepted' },
+      { ingestion_id: 'ing-3', status: 'accepted' },
+    ]
+    ;(global.fetch as jest.Mock).mockResolvedValueOnce({ ok: true, json: async () => ({ events: rows }) })
+
+    const res = await fetchRecentEvents(2)
+    expect(res).toHaveLength(2)
+    expect(res[0].ingestion_id).toBe('ing-1')
   })
 })

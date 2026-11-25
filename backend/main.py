@@ -10,8 +10,12 @@ from app.core.exceptions import (
     global_exception_handler,
     validation_exception_handler,
     not_found_handler,
+    duplicate_ingestion_handler,
+    persistence_exception_handler,
+    
     RequestLoggingMiddleware,
 )
+from app.events.repository import DuplicateIngestionIdError, EventPersistenceError
 from app.api.health import router as health_router
 from app.api.v1.router import api_v1_router
 
@@ -41,6 +45,8 @@ def create_app() -> FastAPI:
     app.add_exception_handler(Exception, global_exception_handler)
     app.add_exception_handler(RequestValidationError, validation_exception_handler)
     app.add_exception_handler(StarletteHTTPException, not_found_handler)
+    app.add_exception_handler(DuplicateIngestionIdError, duplicate_ingestion_handler)
+    app.add_exception_handler(EventPersistenceError, persistence_exception_handler)
 
     # ---- Routers ----
     # Root health / readiness (consumed by frontend system status)
