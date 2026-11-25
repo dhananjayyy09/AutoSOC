@@ -1,8 +1,10 @@
 /**
- * Security Event Ingestion Feature Module (Day 6)
+ * Security Event Ingestion & Normalization Feature Module (Day 6–7)
  */
 export { EventIngestionForm } from "./event-ingestion-form";
 export { RecentEventsList } from "./recent-events-list";
+export { NormalizationStatusBadge } from "./normalization-status-badge";
+export { NormalizedEventView } from "./normalized-event-view";
 export {
   ingestSecurityEvent,
   fetchRecentEvents,
@@ -17,9 +19,13 @@ export type {
   IngestedEventRecord,
   RecentEventsEnvelope,
   BackendValidationErrorItem,
+  EventCategory,
+  EventProtocol,
+  NormalizationStatus,
+  NormalizedSecurityEvent,
 } from "@/types";
 
 export const EVENTS_CONFIG = {
   title: "Event Ingestion",
-  description: "Submit security event JSON payloads to the ingestion pipeline and inspect recent ingestion records.",
+  description: "Submit security event JSON payloads to the ingestion pipeline and inspect raw and normalized event records.",
 } as const;
