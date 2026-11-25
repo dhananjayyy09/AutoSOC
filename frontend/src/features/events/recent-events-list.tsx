@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { RefreshCw } from "lucide-react"
+import { Eye, RefreshCw } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -16,11 +16,15 @@ import type { IngestedEventRecord } from "@/types"
 interface RecentEventsListProps {
   refreshTrigger?: number
   limit?: number
+  selectedIngestionId?: string | null
+  onSelectEvent?: (event: IngestedEventRecord) => void
 }
 
 export function RecentEventsList({
   refreshTrigger = 0,
   limit = DEFAULT_RECENT_EVENTS_LIMIT,
+  selectedIngestionId = null,
+  onSelectEvent,
 }: RecentEventsListProps) {
   const fetcher = React.useCallback(() => fetchRecentEvents(limit), [limit])
   const { status, data, error, execute } = useApiRequest<IngestedEventRecord[]>(fetcher)
@@ -86,6 +90,7 @@ export function RecentEventsList({
                 <TableHead>Source / Type</TableHead>
                 <TableHead>Timestamp</TableHead>
                 <TableHead>Status</TableHead>
+                {onSelectEvent && <TableHead className="text-right">Details</TableHead>}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -93,9 +98,13 @@ export function RecentEventsList({
                 const sourceLabel = evt.source || evt.source_type
                 const sourceAndType = [sourceLabel, evt.event_type || evt.sensor_id].filter(Boolean).join(" / ") || "—"
                 const timestampLabel = evt.ingest_time || evt.timestamp || evt.received_at || "—"
+                const isSelected = selectedIngestionId === evt.ingestion_id
 
                 return (
-                  <TableRow key={evt.ingestion_id}>
+                  <TableRow
+                    key={evt.ingestion_id}
+                    data-state={isSelected ? "selected" : undefined}
+                  >
                     <TableCell className="font-mono text-xs">{evt.ingestion_id}</TableCell>
                     <TableCell className="font-mono text-xs">{evt.event_id || "—"}</TableCell>
                     <TableCell className="text-xs">{sourceAndType}</TableCell>
@@ -110,6 +119,21 @@ export function RecentEventsList({
                         )}
                       </div>
                     </TableCell>
+                    {onSelectEvent && (
+                      <TableCell className="text-right">
+                        <Button
+                          type="button"
+                          variant={isSelected ? "secondary" : "ghost"}
+                          size="sm"
+                          onClick={() => onSelectEvent(evt)}
+                          aria-pressed={isSelected}
+                          aria-label={`Inspect event ${evt.ingestion_id}`}
+                        >
+                          <Eye className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
+                          {isSelected ? "Selected" : "Inspect"}
+                        </Button>
+                      </TableCell>
+                    )}
                   </TableRow>
                 )
               })}

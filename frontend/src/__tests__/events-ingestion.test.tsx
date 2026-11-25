@@ -114,6 +114,20 @@ describe('EventIngestionForm (mocked API)', () => {
     expect(alert).toHaveTextContent(/unable to reach the ingestion backend/i)
   })
 
+  it('displays duplicate ingestion_id 409 error and possible_duplicate badge cleanly', async () => {
+    mockedIngest.mockRejectedValueOnce(new ApiError(409, 'Conflict'))
+
+    render(<EventIngestionForm />)
+    fireEvent.change(screen.getByLabelText(/event payload \(json\)/i), {
+      target: { value: '{"ingestion_id":"dup-1"}' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /submit event/i }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('Duplicate Event')
+    expect(alert).toHaveTextContent(/duplicate ingestion id/i)
+  })
+
   it('clears input and messages when Clear is clicked', async () => {
     render(<EventIngestionForm />)
     const textarea = screen.getByLabelText(/event payload \(json\)/i)
@@ -252,5 +266,26 @@ describe('EventsPage (mocked API)', () => {
       expect(screen.getAllByText('ing-new').length).toBeGreaterThanOrEqual(2)
     })
     expect(mockedFetchRecent).toHaveBeenCalledTimes(2)
+  })
+
+  it('lets the user inspect a recent event in NormalizedEventView', async () => {
+    mockedFetchRecent.mockResolvedValueOnce([
+      {
+        ingestion_id: 'ing-select-1',
+        source_type: 'sysmon',
+        sensor_id: 'sensor-01',
+        ingest_time: '2026-11-25T10:00:00Z',
+        raw_payload_preview: '<Event>sample</Event>',
+        status: 'accepted',
+      },
+    ])
+
+    render(<EventsPage />)
+
+    const inspectBtn = await screen.findByRole('button', { name: /inspect event ing-select-1/i })
+    fireEvent.click(inspectBtn)
+
+    expect(screen.getByText('<Event>sample</Event>')).toBeInTheDocument()
+    expect(screen.getByText('Normalized event not available yet')).toBeInTheDocument()
   })
 })

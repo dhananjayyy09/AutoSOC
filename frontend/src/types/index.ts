@@ -133,6 +133,86 @@ export interface RecentEventsEnvelope {
 }
 
 // ---------------------------------------------------------------------------
+// Normalized Security Event Contracts (Day 7)
+// Aligned with backend/app/events/schemas.py & validation.py
+// ---------------------------------------------------------------------------
+
+/** High-level event category taxonomy (EventCategoryEnum). */
+export type EventCategory =
+  | "process"
+  | "network"
+  | "file"
+  | "registry"
+  | "auth"
+  | "alert"
+  | "unknown";
+
+/** Normalized transport/application protocol (ProtocolEnum). */
+export type EventProtocol =
+  | "tcp"
+  | "udp"
+  | "icmp"
+  | "dns"
+  | "http"
+  | "tls"
+  | "smtp"
+  | "ftp"
+  | "ssh"
+  | "rdp"
+  | "smb"
+  | "other";
+
+/**
+ * Known ingestion/normalization lifecycle statuses from backend contracts.
+ * Unknown string values are also accepted for forward compatibility.
+ */
+export type NormalizationStatus =
+  | "accepted"
+  | "accepted_with_warnings"
+  | "rejected"
+  | "unsupported"
+  | "pending"
+  | "normalized"
+  | "failed"
+  | (string & {});
+
+/**
+ * Authoritative Normalized Security Event Model (v0.2.0).
+ * Matches backend/app/events/schemas.py NormalizedSecurityEvent (10 required + 10 optional).
+ */
+export interface NormalizedSecurityEvent {
+  // Required fields
+  event_id: string;
+  ingestion_id: string;
+  timestamp: string;
+  source: SecurityEventSource | string;
+  event_category: EventCategory | string;
+  event_type: string;
+  host: string;
+  severity?: number | null;
+  raw_event: string;
+  metadata: Record<string, unknown>;
+
+  // Optional fields (null when absent)
+  user?: string | null;
+  source_ip?: string | null;
+  destination_ip?: string | null;
+  source_port?: number | null;
+  destination_port?: number | null;
+  protocol?: EventProtocol | string | null;
+  process?: string | null;
+  file_hash?: string | null;
+  domain?: string | null;
+  command_line?: string | null;
+
+  // Optional lifecycle metadata if provided by future retrieval endpoints
+  normalization_status?: NormalizationStatus;
+  sensor_id?: string | null;
+  warnings?: string[];
+  errors?: string[];
+}
+
+// ---------------------------------------------------------------------------
 // Generic async request state
 // Used by useApiRequest hook for feature components.
 // ---------------------------------------------------------------------------
