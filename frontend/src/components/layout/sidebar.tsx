@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation"
 import { 
   Shield, 
   LayoutDashboard, 
+  FileInput,
   Bell, 
   ShieldAlert, 
   Search, 
@@ -20,6 +21,7 @@ import { cn } from "@/lib/utils"
 
 const navigation = [
   { name: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
+  { name: "Event Ingestion", href: "/events", icon: FileInput },
   { name: "Alerts", href: "/alerts", icon: Bell },
   { name: "Incidents", href: "/incidents", icon: ShieldAlert },
   { name: "Investigations", href: "/investigations", icon: Search },
