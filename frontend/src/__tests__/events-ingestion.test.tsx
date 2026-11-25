@@ -178,6 +178,35 @@ describe('EventIngestionForm (mocked API)', () => {
     expect(statusBanner).toHaveTextContent('duplicate raw_hash')
     expect(statusBanner).toHaveTextContent('2026-11-25T10:15:00Z')
   })
+
+  it('color-codes normalization_status badges accurately for failed and warning outcomes', async () => {
+    mockedIngest
+      .mockResolvedValueOnce({
+        ingestion_id: 'ing-fail-badge',
+        status: 'accepted',
+        normalization_status: 'failed',
+      })
+      .mockResolvedValueOnce({
+        ingestion_id: 'ing-warn-badge',
+        status: 'accepted_with_warnings',
+        normalization_status: 'normalized_with_warnings',
+      })
+
+    render(<EventIngestionForm />)
+    fireEvent.change(screen.getByLabelText(/event payload \(json\)/i), {
+      target: { value: '{"source_type":"sysmon"}' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /submit event/i }))
+
+    const failBadge = await screen.findByText('failed')
+    expect(failBadge).toHaveClass('text-red-300')
+
+    fireEvent.click(screen.getByRole('button', { name: /submit event/i }))
+    const warnStatusBadge = await screen.findByText('accepted_with_warnings')
+    const warnNormBadge = await screen.findByText('normalized_with_warnings')
+    expect(warnStatusBadge).toHaveClass('text-amber-300')
+    expect(warnNormBadge).toHaveClass('text-amber-300')
+  })
 })
 
 // ---------------------------------------------------------------------------

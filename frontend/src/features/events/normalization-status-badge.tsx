@@ -10,7 +10,9 @@ interface StatusPresentation {
   Icon: React.ComponentType<{ className?: string }>
 }
 
-function getStatusPresentation(status: NormalizationStatus | null | undefined): StatusPresentation {
+export function getNormalizationStatusPresentation(
+  status: NormalizationStatus | null | undefined
+): StatusPresentation {
   const normalized = typeof status === "string" ? status.trim().toLowerCase() : ""
 
   switch (normalized) {
@@ -84,7 +86,7 @@ export function NormalizationStatusBadge({
   errors,
   className,
 }: NormalizationStatusBadgeProps) {
-  const { label, className: toneClass, Icon } = getStatusPresentation(status)
+  const { label, className: toneClass, Icon } = getNormalizationStatusPresentation(status)
   const hasWarnings = Boolean(warnings && warnings.length > 0)
   const hasErrors = Boolean(errors && errors.length > 0)
 

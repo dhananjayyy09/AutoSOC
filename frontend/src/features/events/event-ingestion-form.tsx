@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { ApiError, ingestSecurityEvent, isNetworkError } from "@/lib/api"
+import { getNormalizationStatusPresentation } from "./normalization-status-badge"
 import type { BackendValidationErrorItem, EventIngestionRequest, EventIngestionResponse } from "@/types"
 
 interface EventIngestionFormProps {
@@ -210,11 +211,24 @@ export function EventIngestionForm({ onSuccess }: EventIngestionFormProps) {
                       duplicate raw_hash
                     </Badge>
                   )}
-                  <Badge variant="outline" className="border-green-500/40 text-green-300">
+                  <Badge
+                    variant="outline"
+                    className={
+                      successResult.status === "accepted_with_warnings"
+                        ? "border-amber-500/40 text-amber-300"
+                        : "border-green-500/40 text-green-300"
+                    }
+                  >
                     {successResult.status}
                   </Badge>
                   {successResult.normalization_status && (
-                    <Badge variant="outline" className="border-emerald-500/40 text-emerald-300">
+                    <Badge
+                      variant="outline"
+                      className={
+                        getNormalizationStatusPresentation(successResult.normalization_status)
+                          .className
+                      }
+                    >
                       {successResult.normalization_status}
                     </Badge>
                   )}
