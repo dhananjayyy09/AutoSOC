@@ -124,6 +124,14 @@ class ProtocolEnum(str, Enum):
     OTHER = "other"
 
 
+class NormalizationStatusEnum(str, Enum):
+    """Deterministic normalization outcome status for backend and frontend."""
+    NORMALIZED = "normalized"
+    NORMALIZED_WITH_WARNINGS = "normalized_with_warnings"
+    FAILED = "failed"
+    UNSUPPORTED = "unsupported"
+
+
 class IngestionEnvelope(BaseModel):
     """Transport envelope created at the ingestion layer upon receiving raw telemetry."""
     ingestion_id: str = Field(description="UUID v4 identifying this specific delivery attempt")
@@ -148,6 +156,7 @@ class EventMetadata(BaseModel):
     ingest_time: str = Field(description="ISO 8601 UTC receipt timestamp")
     pipeline_version: str = Field(description="Version of normalization pipeline")
     raw_hash: str = Field(description="SHA-256 payload digest for exact-duplicate recognition")
+    sensor_id: Optional[str] = Field(default=None, description="Originating sensor identifier from IngestionEnvelope")
     source_event_id: Optional[str] = Field(default=None, description="Native source identifier (e.g. Sysmon EventRecordID, Zeek UID)")
     correlation_id: Optional[str] = Field(default=None, description="Logical transaction/session correlation ID")
     source_severity: Optional[Union[str, int]] = Field(default=None, description="Raw severity score prior to normalization")
