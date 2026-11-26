@@ -11,19 +11,23 @@ Exposes endpoints for:
 
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.events.api_schemas import (
     EventIngestionResponse,
+    EventSortFieldEnum,
     IngestedEventListResponse,
     IngestedEventSummary,
     NormalizedEventListResponse,
+    NormalizedEventQueryParams,
     NormalizedEventResponse,
+    SortOrderEnum,
     build_payload_preview,
 )
 from app.events.models import NormalizedEvent
@@ -31,10 +35,15 @@ from app.events.normalization_service import NormalizationService
 from app.events.repository import (
     get_normalized_event_by_event_id,
     list_recent_envelopes,
-    list_recent_normalized_events,
     persist_raw_envelope,
+    query_normalized_events,
 )
-from app.events.schemas import IngestionEnvelope, SourceTypeEnum
+from app.events.schemas import (
+    EventCategoryEnum,
+    IngestionEnvelope,
+    NormalizationStatusEnum,
+    SourceTypeEnum,
+)
 from app.events.validation import (
     MAX_RAW_PAYLOAD_BYTES,
     ValidationErrorCategory,
@@ -220,24 +229,125 @@ async def get_recent_ingested_events(
     "/normalized",
     status_code=status.HTTP_200_OK,
     response_model=NormalizedEventListResponse,
-    summary="List Recently Normalized Security Events",
+    summary="Query and Paginate Normalized Security Events",
 )
 async def get_recent_normalized_events(
     limit: int = Query(
         default=20,
         ge=1,
         le=100,
-        description="Maximum number of normalized events to return (1-100)",
+        description="Maximum number of normalized events to return per page (1-100)",
+    ),
+    offset: int = Query(
+        default=0,
+        ge=0,
+        le=100_000,
+        description="Number of matching normalized events to skip (>= 0)",
+    ),
+    source_type: Optional[SourceTypeEnum] = Query(
+        default=None,
+        description="Filter by telemetry source_type",
+    ),
+    normalization_status: Optional[NormalizationStatusEnum] = Query(
+        default=None,
+        description="Filter by normalization_status",
+    ),
+    event_category: Optional[EventCategoryEnum] = Query(
+        default=None,
+        description="Filter by normalized event_category",
+    ),
+    event_type: Optional[str] = Query(
+        default=None,
+        min_length=1,
+        max_length=64,
+        description="Filter by exact normalized event_type (e.g. alert.ids, process.create)",
+    ),
+    severity: Optional[int] = Query(
+        default=None,
+        ge=1,
+        le=5,
+        description="Filter by exact severity level (1-5)",
+    ),
+    min_severity: Optional[int] = Query(
+        default=None,
+        ge=1,
+        le=5,
+        description="Filter by minimum severity level (1-5)",
+    ),
+    max_severity: Optional[int] = Query(
+        default=None,
+        ge=1,
+        le=5,
+        description="Filter by maximum severity level (1-5)",
+    ),
+    start_time: Optional[str] = Query(
+        default=None,
+        description="Filter normalized event timestamp >= start_time (ISO 8601 with timezone)",
+    ),
+    end_time: Optional[str] = Query(
+        default=None,
+        description="Filter normalized event timestamp <= end_time (ISO 8601 with timezone)",
+    ),
+    search: Optional[str] = Query(
+        default=None,
+        max_length=128,
+        description="Case-insensitive substring search across approved normalized fields",
+    ),
+    sort_by: EventSortFieldEnum = Query(
+        default=EventSortFieldEnum.CREATED_AT,
+        description="Field to sort normalized events by",
+    ),
+    sort_order: SortOrderEnum = Query(
+        default=SortOrderEnum.DESC,
+        description="Sort direction (asc or desc)",
     ),
     db: AsyncSession = Depends(get_db),
-) -> NormalizedEventListResponse:
+) -> Any:
     """
-    Retrieve recently processed normalized security events in deterministic descending
-    order (`created_at DESC, id DESC`). Raw payloads are omitted.
+    Query normalized security events at the database level with filtering, search,
+    deterministic sorting, and offset pagination. Raw payloads are omitted.
     """
-    records = await list_recent_normalized_events(db, limit=limit)
+    try:
+        query_params = NormalizedEventQueryParams(
+            limit=limit,
+            offset=offset,
+            source_type=source_type,
+            normalization_status=normalization_status,
+            event_category=event_category,
+            event_type=event_type,
+            severity=severity,
+            min_severity=min_severity,
+            max_severity=max_severity,
+            start_time=start_time,
+            end_time=end_time,
+            search=search,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
+    except ValidationError as exc:
+        errors = [
+            {
+                "field": " -> ".join(["query", *(str(loc) for loc in err.get("loc", []))]),
+                "message": err.get("msg", ""),
+                "type": err.get("type", ""),
+            }
+            for err in exc.errors()
+        ]
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={"message": "Validation error", "errors": errors},
+        )
+
+    records, total = await query_normalized_events(db, query_params)
     items = [_to_normalized_response(rec) for rec in records]
-    return NormalizedEventListResponse(items=items, count=len(items), limit=limit)
+    return NormalizedEventListResponse(
+        items=items,
+        count=len(items),
+        total=total,
+        limit=query_params.limit,
+        offset=query_params.offset,
+        has_more=(query_params.offset + len(items)) < total,
+    )
 
 
 @router.get(
