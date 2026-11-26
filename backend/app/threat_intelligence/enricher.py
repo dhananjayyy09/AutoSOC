@@ -262,6 +262,11 @@ class DeterministicEventEnricher:
             provider or DeterministicLocalEnrichmentProvider()
         )
 
+    async def enrich(self, normalized_event: Dict[str, Any]) -> Dict[str, Any]:
+        """EventEnricherProtocol-compliant async adapter returning serialized EventEnrichmentResult."""
+        result = self.enrich_event(normalized_event)
+        return result.model_dump()
+
     def enrich_event(
         self, event: Any, *, enriched_at: Optional[str] = None
     ) -> EventEnrichmentResult:

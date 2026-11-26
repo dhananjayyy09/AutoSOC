@@ -53,6 +53,8 @@ class InMemoryDay7Session:
         compiled = str(stmt)
         params = stmt.compile().params
         target_val = next(iter(params.values()), None)
+        if "FROM event_enrichments" in compiled:
+            return None
         if "FROM normalized_events" in compiled:
             if "count(" in compiled.lower():
                 return len(self.normalized_rows)
@@ -91,6 +93,8 @@ class InMemoryDay7Session:
         compiled = str(stmt)
         params = stmt.compile().params
         limit_val = next(iter(params.values()), 20)
+        if "FROM event_enrichments" in compiled:
+            return None
         if "FROM normalized_events" in compiled:
             ordered = sorted(
                 self.normalized_rows,

@@ -53,6 +53,7 @@ from app.events.query_contract import (
 )
 from app.events.repository import (
     get_event_enrichment_by_event_id,
+    get_event_enrichments_by_event_ids,
     get_normalized_event_by_event_id,
     list_recent_envelopes,
     persist_raw_envelope,
@@ -86,10 +87,13 @@ def _format_utc_iso(dt: datetime) -> str:
 
 def _to_enrichment_response(rec: EventEnrichment) -> EventEnrichmentResponse:
     raw_prov = rec.provenance or {}
+    provider_version = str(raw_prov.get("provider_version") or "1.0.0")
+    live_lookup = bool(raw_prov.get("live_lookup_performed", False))
     provenance = EnrichmentProvenance(
         pipeline_version=str(raw_prov.get("pipeline_version") or ENRICHMENT_PIPELINE_VERSION),
         provider=str(raw_prov.get("provider") or rec.provider),
-        provider_version=str(raw_prov.get("provider_version") or "1.0.0"),
+        provider_version=provider_version,
+        live_lookup_performed=live_lookup,
         enriched_fields=list(raw_prov.get("enriched_fields") or []),
         source_event_id=str(raw_prov.get("source_event_id") or rec.event_id),
         source_ingestion_id=str(raw_prov.get("source_ingestion_id") or rec.ingestion_id),
@@ -99,12 +103,22 @@ def _to_enrichment_response(rec: EventEnrichment) -> EventEnrichmentResponse:
         if rec.enrichment_data
         else None
     )
+    observables = enrichment_payload.observables if enrichment_payload else []
+    observable_count = (
+        enrichment_payload.observable_count if enrichment_payload else 0
+    )
+    context = enrichment_payload.context if enrichment_payload else None
     return EventEnrichmentResponse(
         enrichment_id=rec.enrichment_id,
         event_id=rec.event_id,
         ingestion_id=rec.ingestion_id,
         provider=rec.provider,
+        provider_version=provider_version,
         enrichment_status=EnrichmentStatusEnum(rec.enrichment_status),
+        live_lookup_performed=live_lookup,
+        observable_count=observable_count,
+        observables=observables,
+        context=context,
         enrichment_data=enrichment_payload,
         provenance=provenance,
         warnings=list(rec.enrichment_warnings or []),
@@ -116,7 +130,21 @@ def _to_enrichment_response(rec: EventEnrichment) -> EventEnrichmentResponse:
     )
 
 
-def _to_normalized_response(rec: NormalizedEvent) -> NormalizedEventResponse:
+def _to_normalized_response(
+    rec: NormalizedEvent, enrichment_rec: Optional[EventEnrichment] = None
+) -> NormalizedEventResponse:
+    enrichment_dto = (
+        _to_enrichment_response(enrichment_rec)
+        if enrichment_rec is not None
+        else None
+    )
+    if enrichment_dto is not None:
+        enrichment_status: Optional[str] = enrichment_dto.enrichment_status.value
+    elif rec.event_id is None:
+        enrichment_status = EnrichmentStatusEnum.SKIPPED.value
+    else:
+        enrichment_status = None
+
     return NormalizedEventResponse(
         event_id=rec.event_id,
         ingestion_id=rec.ingestion_id,
@@ -142,6 +170,8 @@ def _to_normalized_response(rec: NormalizedEvent) -> NormalizedEventResponse:
         normalization_status=rec.normalization_status,
         normalization_errors=list(rec.normalization_errors or []),
         normalization_warnings=list(rec.normalization_warnings or []),
+        enrichment_status=enrichment_status,
+        enrichment=enrichment_dto,
         created_at=_format_utc_iso(rec.created_at),
     )
 
@@ -397,7 +427,14 @@ async def get_recent_normalized_events(
         )
 
     records, total = await query_normalized_events(db, query_params)
-    items = [_to_normalized_response(rec) for rec in records]
+    event_ids = [rec.event_id for rec in records if rec.event_id]
+    enrichment_map = await get_event_enrichments_by_event_ids(db, event_ids)
+    items = [
+        _to_normalized_response(
+            rec, enrichment_map.get(rec.event_id) if rec.event_id else None
+        )
+        for rec in records
+    ]
     return NormalizedEventListResponse(
         items=items,
         count=len(items),
@@ -498,7 +535,8 @@ async def get_normalized_event(
     record = await get_normalized_event_by_event_id(db, event_id)
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
-    return _to_normalized_response(record)
+    enrichment_rec = await get_event_enrichment_by_event_id(db, event_id)
+    return _to_normalized_response(record, enrichment_rec)
 
 
 @router.get(

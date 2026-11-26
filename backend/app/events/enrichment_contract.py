@@ -1,28 +1,26 @@
 """
-AutoSOC - Security Event Enrichment Contract & Schemas (Day 9)
+AutoSOC - Security Event Enrichment Contract & Schemas (Day 9 Reconciled)
 
-Defines the canonical, validated schemas for deterministic event enrichment
-without mutating normalized event columns or raw ingestion payloads.
+Combines Pranjal's canonical observable contract (`app.threat_intelligence.schemas`)
+with DJ's deterministic event-level network and indicator context into a single
+persisted & API-serialized contract without mutating normalized events or raw payloads.
 """
 
-from enum import Enum
 from typing import Any, Dict, FrozenSet, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.threat_intelligence.schemas import (
+    EnrichmentStatusEnum,
+    ObservableClassificationEnum,
+    ObservableTypeEnum,
+    ObservableVerdictEnum,
+)
 
 ENRICHMENT_PIPELINE_VERSION = "0.3.0-day9"
 MAX_PROVIDER_NAME_LENGTH = 64
 
 FORBIDDEN_ENRICHMENT_KEYS: FrozenSet[str] = frozenset({"raw_payload", "raw_event"})
-
-
-class EnrichmentStatusEnum(str, Enum):
-    """Lifecycle outcomes for deterministic normalized-event enrichment."""
-
-    ENRICHED = "enriched"
-    PARTIAL = "partial"
-    SKIPPED = "skipped"
-    FAILED = "failed"
 
 
 class NetworkEnrichmentContext(BaseModel):
@@ -32,11 +30,11 @@ class NetworkEnrichmentContext(BaseModel):
 
     is_internal_src: Optional[bool] = Field(
         default=None,
-        description="True if source_ip is RFC 1918 private, loopback, or link-local",
+        description="True if source_ip is RFC 1918 private, ULA, loopback, or link-local",
     )
     is_internal_dst: Optional[bool] = Field(
         default=None,
-        description="True if destination_ip is RFC 1918 private, loopback, or link-local",
+        description="True if destination_ip is RFC 1918 private, ULA, loopback, or link-local",
     )
     is_external_to_internal: Optional[bool] = Field(
         default=None,
@@ -90,27 +88,77 @@ class ThreatIntelContext(BaseModel):
     sources: List[str] = Field(default_factory=list)
 
 
-class EnrichmentProvenance(BaseModel):
-    """Traceability metadata recording which enricher/version produced an enrichment."""
+class CanonicalObservableProvenance(BaseModel):
+    """Per-observable provenance aligned with app.threat_intelligence.schemas.EnrichmentProvenance."""
 
     model_config = ConfigDict(extra="forbid")
 
-    pipeline_version: str = Field(default=ENRICHMENT_PIPELINE_VERSION, min_length=1, max_length=64)
+    source_event_id: Optional[str] = None
+    ingestion_id: str = Field(min_length=1, max_length=36)
+    source_fields: List[str] = Field(default_factory=list)
+    original_values: List[str] = Field(default_factory=list)
+    provider: str = Field(min_length=1, max_length=MAX_PROVIDER_NAME_LENGTH)
+    provider_version: str = Field(min_length=1, max_length=32)
+    method: str = Field(min_length=1, max_length=128)
+    evidence: str = Field(min_length=1, max_length=512)
+    live_lookup_performed: bool = False
+
+
+class CanonicalEnrichedObservable(BaseModel):
+    """Canonical deduplicated observable with deterministic classification and provenance."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    observable_type: ObservableTypeEnum
+    normalized_value: str = Field(min_length=1, max_length=2048)
+    original_value: str = Field(min_length=1, max_length=2048)
+    classification: ObservableClassificationEnum
+    verdict: ObservableVerdictEnum = ObservableVerdictEnum.UNKNOWN
+    context: Dict[str, Any] = Field(default_factory=dict)
+    provenance: CanonicalObservableProvenance
+
+
+class EnrichmentProvenance(BaseModel):
+    """Event-level traceability metadata recording enricher, version, and source IDs."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    pipeline_version: str = Field(
+        default=ENRICHMENT_PIPELINE_VERSION, min_length=1, max_length=64
+    )
     provider: str = Field(min_length=1, max_length=MAX_PROVIDER_NAME_LENGTH)
     provider_version: str = Field(default="1.0.0", min_length=1, max_length=32)
+    live_lookup_performed: bool = False
     enriched_fields: List[str] = Field(default_factory=list)
     source_event_id: str = Field(min_length=1, max_length=36)
     source_ingestion_id: str = Field(min_length=1, max_length=36)
 
 
-class NormalizedEventEnrichmentPayload(BaseModel):
-    """Validated enrichment data structure stored separately from normalized event columns."""
+class EventEnrichmentContextSections(BaseModel):
+    """Deterministic event-level context sections preserved alongside observables."""
 
     model_config = ConfigDict(extra="forbid")
 
     network: NetworkEnrichmentContext = Field(default_factory=NetworkEnrichmentContext)
-    indicators: IndicatorEnrichmentContext = Field(default_factory=IndicatorEnrichmentContext)
+    indicators: IndicatorEnrichmentContext = Field(
+        default_factory=IndicatorEnrichmentContext
+    )
     threat_intel: Optional[ThreatIntelContext] = None
+
+
+class NormalizedEventEnrichmentPayload(BaseModel):
+    """
+    Canonical enrichment payload stored separately in `event_enrichments.enrichment_data`.
+    Contains both extracted `observables[]` and event-level `context` (`network`, `indicators`).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    observable_count: int = Field(default=0, ge=0)
+    observables: List[CanonicalEnrichedObservable] = Field(default_factory=list)
+    context: EventEnrichmentContextSections = Field(
+        default_factory=EventEnrichmentContextSections
+    )
 
 
 class EnrichmentResult(BaseModel):
@@ -120,6 +168,8 @@ class EnrichmentResult(BaseModel):
 
     status: EnrichmentStatusEnum
     provider: str = Field(min_length=1, max_length=MAX_PROVIDER_NAME_LENGTH)
+    provider_version: str = Field(default="1.0.0", min_length=1, max_length=32)
+    live_lookup_performed: bool = False
     provenance: EnrichmentProvenance
     enrichment_data: Optional[NormalizedEventEnrichmentPayload] = None
     warnings: List[str] = Field(default_factory=list)

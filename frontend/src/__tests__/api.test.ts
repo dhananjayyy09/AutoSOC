@@ -616,4 +616,87 @@ describe('fetchNormalizedEvents & fetchNormalizedEventById', () => {
     expect(res.enrichment?.warnings).toEqual(['Provider B unavailable'])
     expect(res.raw_event).toBeUndefined()
   })
+
+  it('maps canonical Day 9 backend EventEnrichmentResponse shape with observables and context', async () => {
+    const canonicalBackendItem = {
+      event_id: 'evt-day9-canon',
+      ingestion_id: 'ing-day9-canon',
+      raw_envelope_id: 9,
+      timestamp: '2026-11-26T18:00:00Z',
+      source_type: 'suricata',
+      sensor_id: 'sensor-day9',
+      event_category: 'alert',
+      event_type: 'alert.ids',
+      host: 'fw-01',
+      severity: 5,
+      metadata: {},
+      normalization_status: 'normalized',
+      normalization_errors: [],
+      normalization_warnings: [],
+      enrichment_status: 'enriched_partial',
+      enrichment: {
+        enrichment_id: 'enr-canon-1',
+        event_id: 'evt-day9-canon',
+        ingestion_id: 'ing-day9-canon',
+        provider: 'autosoc.deterministic_local',
+        provider_version: '0.1.0',
+        enrichment_status: 'enriched_partial',
+        live_lookup_performed: false,
+        observable_count: 1,
+        observables: [
+          {
+            observable_type: 'ip',
+            normalized_value: '198.51.100.42',
+            original_value: '198.51.100.42',
+            classification: 'documentation_test_ip',
+            verdict: 'unknown',
+            provenance: {
+              provider: 'autosoc.deterministic_local',
+              provider_version: '0.1.0',
+              source_fields: ['source_ip'],
+              method: 'deterministic_ip_classifier',
+              evidence: 'RFC 5737 TEST-NET-2',
+              live_lookup_performed: false,
+            },
+          },
+        ],
+        context: {
+          network: {
+            is_internal_src: false,
+            is_internal_dst: true,
+            is_external_to_internal: true,
+            dst_port_well_known: true,
+          },
+          indicators: {
+            domain_tld: 'invalid',
+            has_file_hash: false,
+          },
+        },
+        warnings: ['malformed domain ignored'],
+        errors: [],
+        attempt_count: 1,
+        enriched_at: '2026-11-26T18:00:02Z',
+        created_at: '2026-11-26T18:00:02Z',
+        updated_at: '2026-11-26T18:00:02Z',
+      },
+      created_at: '2026-11-26T18:00:01Z',
+    }
+    ;(global.fetch as jest.Mock).mockResolvedValueOnce({
+      ok: true,
+      json: async () => canonicalBackendItem,
+    })
+
+    const res = await fetchNormalizedEventById('evt-day9-canon')
+    expect(res.enrichment_status).toBe('enriched_partial')
+    expect(res.enrichment?.status).toBe('enriched_partial')
+    expect(res.enrichment?.provider).toBe('autosoc.deterministic_local')
+    expect(res.enrichment?.live_lookup_performed).toBe(false)
+    expect(res.enrichment?.context?.network?.is_external_to_internal).toBe(true)
+    expect(res.enrichment?.context?.indicators?.domain_tld).toBe('invalid')
+    expect(res.enrichment?.observables).toHaveLength(1)
+    expect(res.enrichment?.observables?.[0].observable).toBe('198.51.100.42')
+    expect(res.enrichment?.observables?.[0].verdict).toBe('unknown')
+    expect(res.enrichment?.observables?.[0].source_field).toBe('source_ip')
+    expect(res.enrichment?.observables?.[0].enriched_at).toBe('2026-11-26T18:00:02Z')
+  })
 })

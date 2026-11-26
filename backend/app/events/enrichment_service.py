@@ -1,10 +1,10 @@
 """
-AutoSOC - Deterministic Security Event Enrichment Service (Day 9)
+AutoSOC - Deterministic Security Event Enrichment Service (Day 9 Reconciled)
 
-Coordinates deterministic local enrichment of persisted NormalizedEvent records
-via EventEnricherProtocol, contract validation (EnrichmentResult), and separate
-persistence in `event_enrichments` without modifying normalized fields or
-touching immutable raw ingestion envelopes.
+Coordinates deterministic observable enrichment (Pranjal's `DeterministicEventEnricher`)
+and event-level network/indicator context (DJ's `DeterministicLocalEnricher`) via
+`EventEnricherProtocol`, validating against the canonical `EnrichmentResult` contract and
+persisting separately in `event_enrichments` without modifying normalized or raw data.
 """
 
 import ipaddress
@@ -18,9 +18,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.events.enrichment_contract import (
     ENRICHMENT_PIPELINE_VERSION,
+    CanonicalEnrichedObservable,
     EnrichmentProvenance,
     EnrichmentResult,
     EnrichmentStatusEnum,
+    EventEnrichmentContextSections,
     IndicatorEnrichmentContext,
     NetworkEnrichmentContext,
     NormalizedEventEnrichmentPayload,
@@ -33,10 +35,11 @@ from app.events.repository import (
     get_normalized_event_by_event_id,
     persist_or_update_event_enrichment,
 )
+from app.threat_intelligence import DeterministicEventEnricher
 
 logger = logging.getLogger("autosoc")
 
-
+# Explicit internal ranges (excludes RFC 5737 / RFC 3849 test-net documentation blocks)
 _INTERNAL_IPV4_NETWORKS = (
     ipaddress.IPv4Network("10.0.0.0/8"),
     ipaddress.IPv4Network("172.16.0.0/12"),
@@ -52,15 +55,12 @@ _INTERNAL_IPV6_NETWORKS = (
 )
 
 
-def _classify_ip(
-    value: Optional[str], field_name: str, warnings: List[str]
-) -> Tuple[Optional[bool], Optional[int]]:
+def _classify_ip(value: Optional[str]) -> Tuple[Optional[bool], Optional[int]]:
     if value is None or not str(value).strip():
         return None, None
     try:
         ip_obj = ipaddress.ip_address(str(value).strip())
     except ValueError:
-        warnings.append(f"Unable to classify malformed IP in '{field_name}'")
         return None, None
 
     if ip_obj.version == 4:
@@ -102,6 +102,7 @@ def _norm_record_to_dict(norm_record: NormalizedEvent) -> Dict[str, Any]:
     return {
         "event_id": norm_record.event_id,
         "ingestion_id": norm_record.ingestion_id,
+        "normalization_status": norm_record.normalization_status,
         "timestamp": norm_record.event_timestamp,
         "source_type": norm_record.source_type,
         "sensor_id": norm_record.sensor_id,
@@ -119,130 +120,187 @@ def _norm_record_to_dict(norm_record: NormalizedEvent) -> Dict[str, Any]:
         "domain": norm_record.domain,
         "command_line": norm_record.command_line,
         "severity": norm_record.severity,
+        "metadata": dict(norm_record.event_metadata or {}),
     }
+
+
+def _extract_event_context(
+    normalized_event: Dict[str, Any], warnings: List[str]
+) -> Tuple[EventEnrichmentContextSections, List[str]]:
+    """Compute DJ's deterministic event-level network & indicator context."""
+    enriched_fields: List[str] = []
+
+    src_ip = normalized_event.get("source_ip")
+    dst_ip = normalized_event.get("destination_ip")
+    dst_port = normalized_event.get("destination_port")
+    domain = normalized_event.get("domain")
+    file_hash = normalized_event.get("file_hash")
+    command_line = normalized_event.get("command_line")
+
+    is_internal_src, src_ver = _classify_ip(src_ip)
+    is_internal_dst, dst_ver = _classify_ip(dst_ip)
+    if is_internal_src is not None:
+        enriched_fields.append("context.network.is_internal_src")
+    if is_internal_dst is not None:
+        enriched_fields.append("context.network.is_internal_dst")
+
+    is_external_to_internal: Optional[bool] = None
+    if is_internal_src is not None and is_internal_dst is not None:
+        is_external_to_internal = (not is_internal_src) and is_internal_dst
+        enriched_fields.append("context.network.is_external_to_internal")
+
+    dst_port_well_known: Optional[bool] = None
+    if isinstance(dst_port, int) and not isinstance(dst_port, bool):
+        if 0 <= dst_port <= 65535:
+            dst_port_well_known = dst_port <= 1023
+            enriched_fields.append("context.network.dst_port_well_known")
+        else:
+            warnings.append("destination_port out of valid range [0, 65535]")
+
+    network_ctx = NetworkEnrichmentContext(
+        is_internal_src=is_internal_src,
+        is_internal_dst=is_internal_dst,
+        is_external_to_internal=is_external_to_internal,
+        src_ip_version=src_ver,
+        dst_ip_version=dst_ver,
+        dst_port_well_known=dst_port_well_known,
+        geo=None,
+    )
+
+    domain_length: Optional[int] = None
+    domain_tld: Optional[str] = None
+    subdomain_count: Optional[int] = None
+    if isinstance(domain, str) and domain.strip():
+        clean_domain = domain.strip().rstrip(".").lower()
+        domain_length = len(clean_domain)
+        parts = [p for p in clean_domain.split(".") if p]
+        if len(parts) >= 2:
+            domain_tld = parts[-1][:64]
+            subdomain_count = max(0, len(parts) - 2)
+        elif len(parts) == 1:
+            subdomain_count = 0
+        enriched_fields.extend(
+            ["context.indicators.domain_length", "context.indicators.subdomain_count"]
+        )
+        if domain_tld is not None:
+            enriched_fields.append("context.indicators.domain_tld")
+
+    has_file_hash, hash_algo = _extract_hash_algorithm(file_hash)
+    if has_file_hash:
+        enriched_fields.append("context.indicators.has_file_hash")
+        if hash_algo is not None:
+            enriched_fields.append("context.indicators.file_hash_algorithm")
+
+    has_command_line = isinstance(command_line, str) and bool(command_line.strip())
+    command_line_length = len(command_line) if has_command_line else None
+    if has_command_line:
+        enriched_fields.extend(
+            ["context.indicators.has_command_line", "context.indicators.command_line_length"]
+        )
+
+    indicator_ctx = IndicatorEnrichmentContext(
+        domain_length=domain_length,
+        domain_tld=domain_tld,
+        subdomain_count=subdomain_count,
+        has_file_hash=has_file_hash,
+        file_hash_algorithm=hash_algo,
+        has_command_line=has_command_line,
+        command_line_length=command_line_length,
+    )
+
+    return (
+        EventEnrichmentContextSections(
+            network=network_ctx,
+            indicators=indicator_ctx,
+            threat_intel=None,
+        ),
+        enriched_fields,
+    )
+
+
+def _issue_messages(items: Any) -> List[str]:
+    messages: List[str] = []
+    if not isinstance(items, list):
+        return messages
+    for item in items:
+        if isinstance(item, str):
+            messages.append(item)
+        elif isinstance(item, dict) and isinstance(item.get("message"), str):
+            messages.append(item["message"])
+    return messages
 
 
 class DeterministicLocalEnricher:
     """
-    Stateless deterministic EventEnricherProtocol implementation for Day 9.
-    Derives network boundary flags and indicator metadata locally without
-    external network calls, API keys, or modifying normalized event fields.
+    Canonical Day 9 EventEnricherProtocol implementation combining:
+      - Pranjal's `DeterministicEventEnricher` for observable extraction,
+        normalization, deduplication, classification, verdicts, and provenance
+      - DJ's deterministic event-level `context.network` & `context.indicators`
     """
 
-    PROVIDER_NAME = "deterministic_local"
-    PROVIDER_VERSION = "1.0.0"
+    def __init__(
+        self, observable_enricher: Optional[DeterministicEventEnricher] = None
+    ) -> None:
+        self._observable_enricher = observable_enricher or DeterministicEventEnricher()
+
+    @property
+    def PROVIDER_NAME(self) -> str:
+        return self._observable_enricher._provider.provider_id
+
+    @property
+    def PROVIDER_VERSION(self) -> str:
+        return self._observable_enricher._provider.provider_version
 
     async def enrich(self, normalized_event: Dict[str, Any]) -> Dict[str, Any]:
-        warnings: List[str] = []
-        enriched_fields: List[str] = []
+        ti_result = self._observable_enricher.enrich_event(normalized_event)
+        ti_dump = ti_result.model_dump()
 
-        src_ip = normalized_event.get("source_ip")
-        dst_ip = normalized_event.get("destination_ip")
-        dst_port = normalized_event.get("destination_port")
-        domain = normalized_event.get("domain")
-        file_hash = normalized_event.get("file_hash")
-        command_line = normalized_event.get("command_line")
-
-        is_internal_src, src_ver = _classify_ip(src_ip, "source_ip", warnings)
-        is_internal_dst, dst_ver = _classify_ip(dst_ip, "destination_ip", warnings)
-
-        if is_internal_src is not None:
-            enriched_fields.append("network.is_internal_src")
-        if is_internal_dst is not None:
-            enriched_fields.append("network.is_internal_dst")
-
-        is_external_to_internal: Optional[bool] = None
-        if is_internal_src is not None and is_internal_dst is not None:
-            is_external_to_internal = (not is_internal_src) and is_internal_dst
-            enriched_fields.append("network.is_external_to_internal")
-
-        dst_port_well_known: Optional[bool] = None
-        if isinstance(dst_port, int) and not isinstance(dst_port, bool):
-            if 0 <= dst_port <= 65535:
-                dst_port_well_known = dst_port <= 1023
-                enriched_fields.append("network.dst_port_well_known")
-            else:
-                warnings.append("destination_port out of valid range [0, 65535]")
-
-        network_ctx = NetworkEnrichmentContext(
-            is_internal_src=is_internal_src,
-            is_internal_dst=is_internal_dst,
-            is_external_to_internal=is_external_to_internal,
-            src_ip_version=src_ver,
-            dst_ip_version=dst_ver,
-            dst_port_well_known=dst_port_well_known,
-            geo=None,
+        extra_warnings: List[str] = []
+        event_context, context_fields = _extract_event_context(
+            normalized_event, extra_warnings
         )
 
-        domain_length: Optional[int] = None
-        domain_tld: Optional[str] = None
-        subdomain_count: Optional[int] = None
-        if isinstance(domain, str) and domain.strip():
-            clean_domain = domain.strip().rstrip(".").lower()
-            domain_length = len(clean_domain)
-            parts = [p for p in clean_domain.split(".") if p]
-            if len(parts) >= 2:
-                domain_tld = parts[-1][:64]
-                subdomain_count = max(0, len(parts) - 2)
-            elif len(parts) == 1:
-                subdomain_count = 0
-            enriched_fields.extend(
-                ["indicators.domain_length", "indicators.subdomain_count"]
-            )
-            if domain_tld is not None:
-                enriched_fields.append("indicators.domain_tld")
+        warnings = _issue_messages(ti_dump.get("warnings")) + extra_warnings
+        errors = _issue_messages(ti_dump.get("errors"))
 
-        has_file_hash, hash_algo = _extract_hash_algorithm(file_hash)
-        if has_file_hash:
-            enriched_fields.append("indicators.has_file_hash")
-            if hash_algo is not None:
-                enriched_fields.append("indicators.file_hash_algorithm")
+        obs_list = [
+            CanonicalEnrichedObservable(**obs) for obs in ti_dump.get("observables", [])
+        ]
+        for obs in obs_list:
+            for field in obs.provenance.source_fields:
+                key = f"observable:{obs.observable_type.value}:{field}"
+                if key not in context_fields:
+                    context_fields.append(key)
 
-        has_command_line = isinstance(command_line, str) and bool(command_line.strip())
-        command_line_length = len(command_line) if has_command_line else None
-        if has_command_line:
-            enriched_fields.extend(
-                ["indicators.has_command_line", "indicators.command_line_length"]
-            )
-
-        indicator_ctx = IndicatorEnrichmentContext(
-            domain_length=domain_length,
-            domain_tld=domain_tld,
-            subdomain_count=subdomain_count,
-            has_file_hash=has_file_hash,
-            file_hash_algorithm=hash_algo,
-            has_command_line=has_command_line,
-            command_line_length=command_line_length,
-        )
+        status = ti_result.enrichment_status
+        if status == EnrichmentStatusEnum.ENRICHED and extra_warnings:
+            status = EnrichmentStatusEnum.ENRICHED_PARTIAL
 
         payload = NormalizedEventEnrichmentPayload(
-            network=network_ctx,
-            indicators=indicator_ctx,
-            threat_intel=None,
+            observable_count=len(obs_list),
+            observables=obs_list,
+            context=event_context,
         )
 
         provenance = EnrichmentProvenance(
             pipeline_version=ENRICHMENT_PIPELINE_VERSION,
-            provider=self.PROVIDER_NAME,
-            provider_version=self.PROVIDER_VERSION,
-            enriched_fields=enriched_fields,
+            provider=ti_result.provider,
+            provider_version=ti_result.provider_version,
+            live_lookup_performed=ti_result.live_lookup_performed,
+            enriched_fields=context_fields,
             source_event_id=str(normalized_event["event_id"]),
             source_ingestion_id=str(normalized_event["ingestion_id"]),
         )
 
-        status = (
-            EnrichmentStatusEnum.PARTIAL
-            if warnings
-            else EnrichmentStatusEnum.ENRICHED
-        )
-
         result = EnrichmentResult(
             status=status,
-            provider=self.PROVIDER_NAME,
+            provider=ti_result.provider,
+            provider_version=ti_result.provider_version,
+            live_lookup_performed=ti_result.live_lookup_performed,
             provenance=provenance,
             enrichment_data=payload,
             warnings=warnings,
-            errors=[],
+            errors=errors,
         )
         return result.model_dump()
 
@@ -265,6 +323,51 @@ class EnrichmentService:
             return None
         return await self.enrich_normalized_event(session, norm_record, retry=retry)
 
+    @staticmethod
+    def _coerce_provider_output(
+        raw_output: Dict[str, Any], norm_record: NormalizedEvent
+    ) -> EnrichmentResult:
+        """
+        Validate provider output into canonical `EnrichmentResult`.
+        Also accepts direct `app.threat_intelligence.EventEnrichmentResult` dicts
+        from `DeterministicEventEnricher`.
+        """
+        if "enrichment_status" in raw_output and "status" not in raw_output:
+            provider = str(raw_output.get("provider") or "deterministic_local_ti")
+            provider_ver = str(raw_output.get("provider_version") or "1.0.0")
+            live_lookup = bool(raw_output.get("live_lookup_performed", False))
+            observables = [
+                CanonicalEnrichedObservable(**obs)
+                for obs in (raw_output.get("observables") or [])
+            ]
+            event_ctx, fields = _extract_event_context(
+                _norm_record_to_dict(norm_record), []
+            )
+            return EnrichmentResult(
+                status=EnrichmentStatusEnum(raw_output["enrichment_status"]),
+                provider=provider,
+                provider_version=provider_ver,
+                live_lookup_performed=live_lookup,
+                provenance=EnrichmentProvenance(
+                    pipeline_version=ENRICHMENT_PIPELINE_VERSION,
+                    provider=provider,
+                    provider_version=provider_ver,
+                    live_lookup_performed=live_lookup,
+                    enriched_fields=fields,
+                    source_event_id=str(norm_record.event_id),
+                    source_ingestion_id=norm_record.ingestion_id,
+                ),
+                enrichment_data=NormalizedEventEnrichmentPayload(
+                    observable_count=len(observables),
+                    observables=observables,
+                    context=event_ctx,
+                ),
+                warnings=_issue_messages(raw_output.get("warnings")),
+                errors=_issue_messages(raw_output.get("errors")),
+            )
+
+        return EnrichmentResult(**raw_output)
+
     async def enrich_normalized_event(
         self,
         session: AsyncSession,
@@ -284,16 +387,17 @@ class EnrichmentService:
         )
         if existing is not None:
             is_retryable = existing.enrichment_status == EnrichmentStatusEnum.FAILED.value
-            if not retry and not is_retryable:
+            if not retry:
                 return existing
             if not retry and is_retryable:
                 return existing
 
         now_utc = datetime.now(timezone.utc)
         norm_dict = _norm_record_to_dict(norm_record)
-        default_provider = getattr(
-            self._enricher, "PROVIDER_NAME", type(self._enricher).__name__
+        default_provider = str(
+            getattr(self._enricher, "PROVIDER_NAME", type(self._enricher).__name__)
         )
+        default_provider_ver = str(getattr(self._enricher, "PROVIDER_VERSION", "1.0.0"))
 
         validated_result: Optional[EnrichmentResult] = None
         failure_errors: List[str] = []
@@ -305,7 +409,7 @@ class EnrichmentService:
                     "Enrichment provider output rejected: forbidden raw payload key present"
                 ]
             else:
-                validated_result = EnrichmentResult(**raw_output)
+                validated_result = self._coerce_provider_output(raw_output, norm_record)
         except ValidationError as exc:
             failure_errors = _sanitize_validation_errors(exc)
         except Exception as exc:
@@ -329,7 +433,8 @@ class EnrichmentService:
                 else {
                     "pipeline_version": ENRICHMENT_PIPELINE_VERSION,
                     "provider": default_provider,
-                    "provider_version": "unknown",
+                    "provider_version": default_provider_ver,
+                    "live_lookup_performed": False,
                     "enriched_fields": [],
                     "source_event_id": norm_record.event_id,
                     "source_ingestion_id": norm_record.ingestion_id,
@@ -357,7 +462,11 @@ class EnrichmentService:
         enriched_at = (
             now_utc
             if validated_result.status
-            in (EnrichmentStatusEnum.ENRICHED, EnrichmentStatusEnum.PARTIAL)
+            in (
+                EnrichmentStatusEnum.ENRICHED,
+                EnrichmentStatusEnum.ENRICHED_PARTIAL,
+                EnrichmentStatusEnum.NO_OBSERVABLES,
+            )
             else None
         )
         return await self._upsert_enrichment(

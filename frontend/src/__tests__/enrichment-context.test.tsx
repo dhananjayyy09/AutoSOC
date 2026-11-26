@@ -218,4 +218,63 @@ describe('NormalizedEventView & Explorer Enrichment Integration (mocked API)', (
     expect(await screen.findByText('host-01')).toBeInTheDocument()
     expect(screen.getByLabelText('Enrichment status: Enriched')).toBeInTheDocument()
   })
+
+  it('supports canonical enriched_partial and no_observables badges and context sections', () => {
+    const { rerender } = render(<EnrichmentStatusBadge status="enriched_partial" />)
+    expect(screen.getByLabelText('Enrichment status: Partial Enrichment')).toBeInTheDocument()
+
+    rerender(<EnrichmentStatusBadge status="no_observables" />)
+    expect(screen.getByLabelText('Enrichment status: No Observables')).toBeInTheDocument()
+
+    render(
+      <EnrichmentContextPanel
+        enrichmentStatus="enriched"
+        enrichment={{
+          enrichment_id: 'enr-1',
+          status: 'enriched',
+          provider: 'autosoc.deterministic_local',
+          provider_version: '0.1.0',
+          live_lookup_performed: false,
+          attempt_count: 1,
+          enriched_at: '2026-11-26T18:00:00Z',
+          context: {
+            network: {
+              is_internal_src: false,
+              is_internal_dst: true,
+              is_external_to_internal: true,
+              dst_port_well_known: true,
+            },
+            indicators: {
+              domain_tld: 'invalid',
+              file_hash_algorithm: 'sha256',
+            },
+          },
+          observables: [
+            {
+              observable: 'c2.test.invalid',
+              original_value: 'C2.TEST.INVALID.',
+              observable_type: 'domain',
+              classification: 'reserved_or_test_domain',
+              verdict: 'unknown',
+              provider: 'autosoc.deterministic_local',
+              source_field: 'domain',
+              enriched_at: '2026-11-26T18:00:00Z',
+              provenance: {
+                method: 'deterministic_domain_classifier',
+                evidence: 'Test domain TLD',
+                source_fields: ['domain'],
+              },
+            },
+          ],
+        }}
+      />
+    )
+
+    expect(screen.getByText(/Offline Deterministic/)).toBeInTheDocument()
+    expect(screen.getByText(/External -> Internal/)).toBeInTheDocument()
+    expect(screen.getByText('c2.test.invalid')).toBeInTheDocument()
+    expect(screen.getByText(/orig: C2\.TEST\.INVALID\./)).toBeInTheDocument()
+    expect(screen.getByText('verdict: unknown')).toBeInTheDocument()
+    expect(screen.getByText('deterministic_domain_classifier')).toBeInTheDocument()
+  })
 })

@@ -116,21 +116,40 @@ class InMemoryDay9Session:
     async def scalars(self, stmt: Any) -> MagicMock:
         compiled = str(stmt)
         params = stmt.compile().params
-        limit_val = int(params.get("param_1", 20))
-        offset_val = int(params.get("param_2", 0))
         if "FROM event_enrichments" in compiled:
-            ordered = sorted(
-                self.enrichment_rows,
-                key=lambda r: (r.created_at, r.id),
-                reverse=True,
-            )[offset_val : offset_val + limit_val]
+            if "WHERE event_enrichments.event_id IN" in compiled:
+                id_vals = set()
+                for val in params.values():
+                    if isinstance(val, (list, tuple, set)):
+                        id_vals.update(val)
+                    elif isinstance(val, str):
+                        id_vals.add(val)
+                ordered = [e for e in self.enrichment_rows if e.event_id in id_vals]
+            else:
+                raw_lim = params.get("param_1", 20)
+                limit_val = int(raw_lim) if isinstance(raw_lim, int) else 20
+                raw_off = params.get("param_2", 0)
+                offset_val = int(raw_off) if isinstance(raw_off, int) else 0
+                ordered = sorted(
+                    self.enrichment_rows,
+                    key=lambda r: (r.created_at, r.id),
+                    reverse=True,
+                )[offset_val : offset_val + limit_val]
         elif "FROM normalized_events" in compiled:
+            raw_lim = params.get("param_1", 20)
+            limit_val = int(raw_lim) if isinstance(raw_lim, int) else 20
+            raw_off = params.get("param_2", 0)
+            offset_val = int(raw_off) if isinstance(raw_off, int) else 0
             ordered = sorted(
                 self.normalized_rows,
                 key=lambda r: (r.created_at, r.id),
                 reverse=True,
             )[offset_val : offset_val + limit_val]
         else:
+            raw_lim = params.get("param_1", 20)
+            limit_val = int(raw_lim) if isinstance(raw_lim, int) else 20
+            raw_off = params.get("param_2", 0)
+            offset_val = int(raw_off) if isinstance(raw_off, int) else 0
             ordered = sorted(
                 self.raw_rows,
                 key=lambda r: (r.received_at, r.id),
@@ -254,21 +273,27 @@ def test_deterministic_local_enricher_protocol_and_determinism():
     res2 = asyncio.run(enricher.enrich(norm_dict))
     assert res1 == res2
     assert res1["status"] == "enriched"
-    assert res1["provider"] == "deterministic_local"
+    assert res1["provider"] == "autosoc.deterministic_local"
+    assert res1["provider_version"] == "0.1.0"
+    assert res1["live_lookup_performed"] is False
     assert res1["provenance"]["pipeline_version"] == ENRICHMENT_PIPELINE_VERSION
-    assert res1["enrichment_data"]["network"]["is_internal_src"] is False
-    assert res1["enrichment_data"]["network"]["is_internal_dst"] is True
-    assert res1["enrichment_data"]["network"]["is_external_to_internal"] is True
-    assert res1["enrichment_data"]["network"]["dst_port_well_known"] is True
-    assert res1["enrichment_data"]["indicators"]["domain_tld"] == "invalid"
-    assert res1["enrichment_data"]["indicators"]["subdomain_count"] == 2
-    assert res1["enrichment_data"]["indicators"]["file_hash_algorithm"] == "sha256"
+    assert res1["enrichment_data"]["observable_count"] == 4
+    assert all(
+        obs["verdict"] == "unknown" for obs in res1["enrichment_data"]["observables"]
+    )
+    assert res1["enrichment_data"]["context"]["network"]["is_internal_src"] is False
+    assert res1["enrichment_data"]["context"]["network"]["is_internal_dst"] is True
+    assert res1["enrichment_data"]["context"]["network"]["is_external_to_internal"] is True
+    assert res1["enrichment_data"]["context"]["network"]["dst_port_well_known"] is True
+    assert res1["enrichment_data"]["context"]["indicators"]["domain_tld"] == "invalid"
+    assert res1["enrichment_data"]["context"]["indicators"]["subdomain_count"] == 2
+    assert res1["enrichment_data"]["context"]["indicators"]["file_hash_algorithm"] == "sha256"
 
 
 def test_partial_and_missing_enrichment_data_handled_safely(day9_db):
     async def _run():
         service = EnrichmentService()
-        # Missing optional indicators -> still valid deterministic enriched record
+        # Missing optional indicators -> valid deterministic record with no_observables
         minimal = _sample_norm_event(
             source_ip=None,
             destination_ip=None,
@@ -280,11 +305,13 @@ def test_partial_and_missing_enrichment_data_handled_safely(day9_db):
         day9_db.normalized_rows.append(minimal)
         rec = await service.enrich_normalized_event(day9_db, minimal)
         assert rec is not None
-        assert rec.enrichment_status == "enriched"
-        assert rec.enrichment_data["network"]["is_internal_src"] is None
-        assert rec.enrichment_data["indicators"]["has_file_hash"] is False
+        assert rec.enrichment_status == "no_observables"
+        assert rec.enrichment_data["observable_count"] == 0
+        assert rec.enrichment_data["observables"] == []
+        assert rec.enrichment_data["context"]["network"]["is_internal_src"] is None
+        assert rec.enrichment_data["context"]["indicators"]["has_file_hash"] is False
 
-        # Malformed IP produces partial enrichment with sanitized warning
+        # Malformed IP produces canonical enriched_partial status with sanitized warning
         malformed_norm = _sample_norm_event(
             row_id=2,
             event_id="cccc1111-1111-4111-8111-111111111111",
@@ -295,10 +322,11 @@ def test_partial_and_missing_enrichment_data_handled_safely(day9_db):
         day9_db.normalized_rows.append(malformed_norm)
         rec_partial = await service.enrich_normalized_event(day9_db, malformed_norm)
         assert rec_partial is not None
-        assert rec_partial.enrichment_status == "partial"
-        assert len(rec_partial.enrichment_warnings) == 1
-        assert rec_partial.enrichment_data["network"]["is_internal_src"] is None
-        assert rec_partial.enrichment_data["network"]["is_internal_dst"] is True
+        assert rec_partial.enrichment_status == "enriched_partial"
+        assert len(rec_partial.enrichment_warnings) >= 1
+        assert rec_partial.enrichment_data["observable_count"] >= 1
+        assert rec_partial.enrichment_data["context"]["network"]["is_internal_src"] is None
+        assert rec_partial.enrichment_data["context"]["network"]["is_internal_dst"] is True
 
         # Failed normalization without event_id is safely skipped
         no_event_norm = _sample_norm_event(row_id=3, event_id=None, ingestion_id="eeee1111-1111-4111-8111-111111111111")
@@ -327,7 +355,7 @@ def test_provider_failure_and_invalid_contract_rejected_without_corrupting_evide
                     "source_ingestion_id": normalized_event["ingestion_id"],
                 },
                 "enrichment_data": {
-                    "network": {"geo": {"raw_payload": "SECRET_RAW"}}
+                    "context": {"network": {"geo": {"raw_payload": "SECRET_RAW"}}}
                 },
             }
 
@@ -344,7 +372,7 @@ def test_provider_failure_and_invalid_contract_rejected_without_corrupting_evide
                     "source_ingestion_id": normalized_event["ingestion_id"],
                 },
                 "enrichment_data": {
-                    "threat_intel": {"ip_score": 999},  # violates le=100
+                    "context": {"threat_intel": {"ip_score": 999}},  # violates le=100
                 },
             }
 
@@ -416,13 +444,30 @@ def test_ingest_triggers_enrichment_non_blocking_and_api_retrieval(day9_db):
     assert body["enrichment_status"] == "enriched"
     event_id = body["event_id"]
 
-    # Retrieve enrichment detail
+    # Retrieve enrichment detail and normalized list/detail exposure
     detail = client.get(f"/api/v1/events/normalized/{event_id}/enrichment")
     assert detail.status_code == 200
     d_body = detail.json()
     assert d_body["enrichment_status"] == "enriched"
-    assert d_body["enrichment_data"]["network"]["is_external_to_internal"] is True
+    assert d_body["provider"] == "autosoc.deterministic_local"
+    assert d_body["live_lookup_performed"] is False
+    assert d_body["observable_count"] >= 2
+    assert len(d_body["observables"]) >= 2
+    assert d_body["context"]["network"]["is_external_to_internal"] is True
+    assert d_body["enrichment_data"]["context"]["network"]["is_external_to_internal"] is True
     assert "raw_payload" not in d_body and "raw_event" not in d_body
+
+    norm_list_resp = client.get("/api/v1/events/normalized", params={"limit": 10})
+    assert norm_list_resp.status_code == 200
+    norm_items = norm_list_resp.json()["items"]
+    assert len(norm_items) == 1
+    assert norm_items[0]["enrichment_status"] == "enriched"
+    assert norm_items[0]["enrichment"]["observable_count"] >= 2
+
+    norm_detail_resp = client.get(f"/api/v1/events/normalized/{event_id}")
+    assert norm_detail_resp.status_code == 200
+    assert norm_detail_resp.json()["enrichment_status"] == "enriched"
+    assert norm_detail_resp.json()["enrichment"]["enrichment_id"] == d_body["enrichment_id"]
 
     # Repeated enrich call without retry is idempotent (attempt_count remains 1)
     re_trigger = client.post(f"/api/v1/events/normalized/{event_id}/enrich")
@@ -576,18 +621,24 @@ def test_live_postgres_enrichment_e2e_retry_immutability_and_fk_restrict(live_po
     event_id = resp.json()["event_id"]
     assert resp.json()["enrichment_status"] == "enriched"
 
-    # Normalized event columns remain strictly intact
+    # Normalized event columns remain strictly intact while exposing canonical enrichment
     norm_before = client.get(f"/api/v1/events/normalized/{event_id}").json()
     assert norm_before["severity"] == 5
     assert norm_before["source_ip"] == "198.51.100.99"
+    assert norm_before["enrichment_status"] == "enriched"
+    assert norm_before["enrichment"] is not None
+    assert norm_before["enrichment"]["observable_count"] >= 3
 
     # Enrichment record persisted separately in PostgreSQL
     e_resp = client.get(f"/api/v1/events/normalized/{event_id}/enrichment")
     assert e_resp.status_code == 200
     e_body = e_resp.json()
-    assert e_body["enrichment_data"]["network"]["is_external_to_internal"] is True
-    assert e_body["enrichment_data"]["network"]["dst_port_well_known"] is True
-    assert e_body["enrichment_data"]["indicators"]["domain_tld"] == "invalid"
+    assert e_body["provider"] == "autosoc.deterministic_local"
+    assert e_body["observable_count"] >= 3
+    assert e_body["context"]["network"]["is_external_to_internal"] is True
+    assert e_body["context"]["network"]["dst_port_well_known"] is True
+    assert e_body["context"]["indicators"]["domain_tld"] == "invalid"
+    assert e_body["enrichment_data"]["context"]["network"]["is_external_to_internal"] is True
     assert e_body["attempt_count"] == 1
 
     # Forced retry updates existing record in place without creating duplicate row
@@ -602,7 +653,7 @@ def test_live_postgres_enrichment_e2e_retry_immutability_and_fk_restrict(live_po
     # List endpoint filters cleanly
     lst_resp = client.get(
         "/api/v1/events/enrichments",
-        params={"provider": "deterministic_local", "enrichment_status": "enriched"},
+        params={"provider": "autosoc.deterministic_local", "enrichment_status": "enriched"},
     )
     assert lst_resp.status_code == 200
     assert lst_resp.json()["total"] >= 1
@@ -623,4 +674,7 @@ def test_live_postgres_enrichment_e2e_retry_immutability_and_fk_restrict(live_po
 
     asyncio.run(_verify_fk_and_norm_unchanged())
     norm_after = client.get(f"/api/v1/events/normalized/{event_id}").json()
-    assert norm_after == norm_before
+    assert norm_after["enrichment"]["attempt_count"] == 2
+    assert {k: v for k, v in norm_after.items() if k != "enrichment"} == {
+        k: v for k, v in norm_before.items() if k != "enrichment"
+    }

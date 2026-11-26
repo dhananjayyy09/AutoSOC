@@ -21,6 +21,7 @@ export function getEnrichmentStatusPresentation(
         className: "border-emerald-500/40 bg-emerald-500/10 text-emerald-300",
         Icon: CheckCircle2,
       }
+    case "enriched_partial":
     case "partial":
     case "partially_enriched":
     case "enriched_with_warnings":
@@ -34,6 +35,12 @@ export function getEnrichmentStatusPresentation(
         label: "Enrichment Failed",
         className: "border-red-500/40 bg-red-500/10 text-red-300",
         Icon: XCircle,
+      }
+    case "no_observables":
+      return {
+        label: "No Observables",
+        className: "border-slate-500/40 bg-slate-500/10 text-slate-300",
+        Icon: MinusCircle,
       }
     case "skipped":
       return {

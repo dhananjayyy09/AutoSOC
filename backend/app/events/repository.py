@@ -7,8 +7,9 @@ enforces delivery-attempt uniqueness (ingestion_id), and flags duplicate raw
 payloads (raw_hash) without silently discarding events.
 """
 
+import inspect
 import logging
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -342,6 +343,41 @@ async def get_event_enrichment_by_event_id(
         logger.error(
             "Database failure retrieving enrichment for event_id=%s: %s",
             event_id,
+            exc,
+            exc_info=True,
+        )
+        raise EventPersistenceError("Database retrieval failure") from exc
+
+
+async def get_event_enrichments_by_event_ids(
+    session: AsyncSession, event_ids: List[str]
+) -> Dict[str, EventEnrichment]:
+    """
+    Batch-retrieve EventEnrichment records keyed by normalized event_id in one
+    database query (eliminates N+1 lookups during paginated normalized queries).
+    """
+    clean_ids = list(dict.fromkeys(eid for eid in event_ids if isinstance(eid, str) and eid))
+    if not clean_ids:
+        return {}
+    try:
+        result = await session.scalars(
+            select(EventEnrichment).where(EventEnrichment.event_id.in_(clean_ids))
+        )
+        rows = result.all() if result is not None else []
+        if inspect.iscoroutine(rows):
+            rows.close()
+            return {}
+        if not isinstance(rows, (list, tuple)):
+            return {}
+        out: Dict[str, EventEnrichment] = {}
+        for row in rows:
+            if isinstance(row, EventEnrichment) and row.event_id:
+                out[row.event_id] = row
+        return out
+    except SQLAlchemyError as exc:
+        logger.error(
+            "Database failure batch-retrieving enrichments for %d events: %s",
+            len(clean_ids),
             exc,
             exc_info=True,
         )

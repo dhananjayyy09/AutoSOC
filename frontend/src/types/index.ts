@@ -95,6 +95,7 @@ export interface EventIngestionResponse {
   event_id?: string | null;
   status: string;
   normalization_status?: NormalizationStatus | null;
+  enrichment_status?: EnrichmentStatus | null;
   source?: string;
   source_type?: SecurityEventSource | string;
   possible_duplicate?: boolean;
@@ -260,26 +261,115 @@ export interface NormalizedEventListResult {
 }
 
 // ---------------------------------------------------------------------------
-// Security Enrichment Context Contracts (Day 9)
-// Canonical enrichment structures attached to normalized events.
+// Security Enrichment Context Contracts (Day 9 Reconciled)
+// Canonical enrichment structures aligned with backend/app/events/enrichment_contract.py
 // ---------------------------------------------------------------------------
 
-/** Extracted observable and its enrichment context. */
+/** Canonical enrichment status enum matching backend EnrichmentStatusEnum. */
+export type CanonicalEnrichmentStatus =
+  | "enriched"
+  | "enriched_partial"
+  | "no_observables"
+  | "skipped"
+  | "failed";
+
+export type EnrichmentStatus =
+  | CanonicalEnrichmentStatus
+  | "partial"
+  | "not_enriched"
+  | (string & {});
+
+/** Per-observable provenance metadata returned by canonical Day 9 enrichers. */
+export interface ObservableProvenance {
+  source_event_id?: string | null;
+  ingestion_id?: string;
+  source_fields?: string[];
+  original_values?: string[];
+  provider?: string;
+  provider_version?: string;
+  method?: string;
+  evidence?: string;
+  live_lookup_performed?: boolean;
+}
+
+/** Extracted observable and its deterministic enrichment context. */
 export interface EventObservableEnrichment {
   observable: string;
+  normalized_value?: string;
+  original_value?: string | null;
   observable_type: string;
   classification?: string | null;
+  verdict?: string | null;
   provider?: string | null;
   source_field?: string | null;
   enriched_at?: string | null;
   tags?: string[];
+  provenance?: ObservableProvenance | string | null;
+  context?: Record<string, unknown>;
 }
 
-/** Enrichment summary & derived context attached to a normalized event. */
+/** Deterministic network & IP boundary context derived from normalized endpoints. */
+export interface NetworkEnrichmentContext {
+  is_internal_src?: boolean | null;
+  is_internal_dst?: boolean | null;
+  is_external_to_internal?: boolean | null;
+  src_ip_version?: number | null;
+  dst_ip_version?: number | null;
+  dst_port_well_known?: boolean | null;
+  geo?: Record<string, unknown> | null;
+}
+
+/** Deterministic structural attributes for domain, hash, and command indicators. */
+export interface IndicatorEnrichmentContext {
+  domain_length?: number | null;
+  domain_tld?: string | null;
+  subdomain_count?: number | null;
+  has_file_hash?: boolean;
+  file_hash_algorithm?: string | null;
+  has_command_line?: boolean;
+  command_line_length?: number | null;
+}
+
+/** Future threat-intel placeholder section (detection-neutral). */
+export interface ThreatIntelContext {
+  ip_score?: number | null;
+  ip_categories?: string[];
+  domain_score?: number | null;
+  hash_known_malware?: boolean | null;
+  sources?: string[];
+}
+
+/** Event-level enrichment context sections attached alongside observables[]. */
+export interface EventEnrichmentContextSections {
+  network?: NetworkEnrichmentContext;
+  indicators?: IndicatorEnrichmentContext;
+  threat_intel?: ThreatIntelContext | null;
+}
+
+/** Event-level enrichment provenance record. */
+export interface EventEnrichmentProvenance {
+  pipeline_version?: string;
+  provider?: string;
+  provider_version?: string;
+  live_lookup_performed?: boolean;
+  enriched_fields?: string[];
+  source_event_id?: string;
+  source_ingestion_id?: string;
+}
+
+/** Enrichment summary & derived context attached to a normalized event or /enrichment response. */
 export interface EventEnrichmentContext {
-  status?: string | null;
+  enrichment_id?: string | null;
+  status?: EnrichmentStatus | null;
+  provider?: string | null;
+  provider_version?: string | null;
+  live_lookup_performed?: boolean | null;
+  observable_count?: number;
   enriched_at?: string | null;
+  attempt_count?: number;
   observables?: EventObservableEnrichment[];
+  context?: EventEnrichmentContextSections | null;
+  provenance?: EventEnrichmentProvenance | null;
   warnings?: string[];
   errors?: string[];
   providers?: string[];
