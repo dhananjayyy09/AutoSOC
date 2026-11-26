@@ -40,12 +40,6 @@ export function getNormalizationStatusPresentation(
         className: "border-amber-500/40 bg-amber-500/10 text-amber-300",
         Icon: AlertTriangle,
       }
-    case "pending":
-      return {
-        label: "Pending Normalization",
-        className: "border-slate-500/40 bg-slate-500/10 text-slate-300",
-        Icon: Clock,
-      }
     case "unsupported":
       return {
         label: "Unsupported Source",

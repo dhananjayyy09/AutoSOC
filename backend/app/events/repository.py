@@ -14,12 +14,15 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.events.api_schemas import (
-    EventSortFieldEnum,
-    NormalizedEventQueryParams,
-    SortOrderEnum,
-)
 from app.events.models import NormalizedEvent, RawEventEnvelope
+from app.events.query_contract import (
+    NormalizedEventQueryParams,
+    NormalizedEventSortField,
+    SEARCHABLE_NORMALIZED_EVENT_FIELDS,
+    SORT_FIELD_TO_ORM_COLUMN,
+    SortOrderEnum,
+    escape_like_pattern,
+)
 from app.events.schemas import IngestionEnvelope
 
 logger = logging.getLogger("autosoc")
@@ -233,35 +236,15 @@ async def persist_normalized_event(
         raise EventPersistenceError("Normalized event persistence failure") from exc
 
 
-_SEARCHABLE_NORMALIZED_COLUMNS = (
-    NormalizedEvent.event_id,
-    NormalizedEvent.ingestion_id,
-    NormalizedEvent.sensor_id,
-    NormalizedEvent.event_type,
-    NormalizedEvent.host,
-    NormalizedEvent.user_name,
-    NormalizedEvent.source_ip,
-    NormalizedEvent.destination_ip,
-    NormalizedEvent.process,
-    NormalizedEvent.domain,
-    NormalizedEvent.file_hash,
-    NormalizedEvent.command_line,
+_SEARCHABLE_NORMALIZED_COLUMNS = tuple(
+    getattr(NormalizedEvent, field_name)
+    for field_name in SEARCHABLE_NORMALIZED_EVENT_FIELDS
 )
 
 _SORT_COLUMN_MAP = {
-    EventSortFieldEnum.CREATED_AT: NormalizedEvent.created_at,
-    EventSortFieldEnum.TIMESTAMP: NormalizedEvent.event_timestamp,
-    EventSortFieldEnum.SEVERITY: NormalizedEvent.severity,
-    EventSortFieldEnum.SOURCE_TYPE: NormalizedEvent.source_type,
-    EventSortFieldEnum.NORMALIZATION_STATUS: NormalizedEvent.normalization_status,
-    EventSortFieldEnum.EVENT_CATEGORY: NormalizedEvent.event_category,
-    EventSortFieldEnum.EVENT_TYPE: NormalizedEvent.event_type,
+    sort_field: getattr(NormalizedEvent, col_name)
+    for sort_field, col_name in SORT_FIELD_TO_ORM_COLUMN.items()
 }
-
-
-def _escape_like(value: str) -> str:
-    """Escape SQL LIKE/ILIKE wildcards so search matches literal substrings."""
-    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _build_normalized_event_filters(params: NormalizedEventQueryParams) -> List[Any]:
@@ -278,16 +261,12 @@ def _build_normalized_event_filters(params: NormalizedEventQueryParams) -> List[
         filters.append(NormalizedEvent.event_type == params.event_type)
     if params.severity is not None:
         filters.append(NormalizedEvent.severity == params.severity)
-    if params.min_severity is not None:
-        filters.append(NormalizedEvent.severity >= params.min_severity)
-    if params.max_severity is not None:
-        filters.append(NormalizedEvent.severity <= params.max_severity)
     if params.start_time is not None:
         filters.append(NormalizedEvent.event_timestamp >= params.start_time)
     if params.end_time is not None:
         filters.append(NormalizedEvent.event_timestamp <= params.end_time)
     if params.search is not None:
-        pattern = f"%{_escape_like(params.search)}%"
+        pattern = f"%{escape_like_pattern(params.search)}%"
         filters.append(
             or_(*(col.ilike(pattern, escape="\\") for col in _SEARCHABLE_NORMALIZED_COLUMNS))
         )
@@ -295,7 +274,7 @@ def _build_normalized_event_filters(params: NormalizedEventQueryParams) -> List[
 
 
 def _resolve_sort_clauses(
-    sort_by: EventSortFieldEnum, sort_order: SortOrderEnum
+    sort_by: NormalizedEventSortField, sort_order: SortOrderEnum
 ) -> Tuple[Any, ...]:
     primary_col = _SORT_COLUMN_MAP[sort_by]
     if sort_order == SortOrderEnum.ASC:

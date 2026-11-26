@@ -425,8 +425,11 @@ describe('buildNormalizedEventsQueryString & queryNormalizedEvents', () => {
       source_type: 'sysmon',
       normalization_status: 'normalized',
       event_category: 'process',
+      event_type: '  PROCESS.CREATE ',
       severity: 4,
-      sort_by: 'timestamp',
+      start_time: '2026-11-26T00:00:00Z',
+      end_time: '2026-11-26T12:00:00Z',
+      sort_by: 'normalization_status',
       sort_order: 'asc',
     })
     const parsed = new URLSearchParams(qs)
@@ -436,9 +439,15 @@ describe('buildNormalizedEventsQueryString & queryNormalizedEvents', () => {
     expect(parsed.get('source_type')).toBe('sysmon')
     expect(parsed.get('normalization_status')).toBe('normalized')
     expect(parsed.get('event_category')).toBe('process')
+    expect(parsed.get('event_type')).toBe('process.create')
     expect(parsed.get('severity')).toBe('4')
-    expect(parsed.get('sort_by')).toBe('timestamp')
+    expect(parsed.get('start_time')).toBe('2026-11-26T00:00:00.000Z'.replace('.000Z', 'Z'))
+    expect(parsed.get('end_time')).toBe('2026-11-26T12:00:00Z')
+    expect(parsed.get('sort_by')).toBe('normalization_status')
     expect(parsed.get('sort_order')).toBe('asc')
+
+    const clamped = new URLSearchParams(buildNormalizedEventsQueryString({ offset: 99999 }))
+    expect(clamped.get('offset')).toBe('10000')
   })
 
   it('queries /api/v1/events/normalized and maps NormalizedEventListResult', async () => {
@@ -465,6 +474,8 @@ describe('buildNormalizedEventsQueryString & queryNormalizedEvents', () => {
       count: 1,
       limit: 20,
       total: 42,
+      offset: 0,
+      has_more: true,
     }
     ;(global.fetch as jest.Mock).mockResolvedValueOnce({
       ok: true,
@@ -479,6 +490,7 @@ describe('buildNormalizedEventsQueryString & queryNormalizedEvents', () => {
     )
     expect(res.count).toBe(1)
     expect(res.total).toBe(42)
+    expect(res.has_more).toBe(true)
     expect(res.items[0].source).toBe('sysmon')
     expect(res.items[0].warnings).toEqual(['minor warning'])
   })

@@ -10,10 +10,17 @@ import { LoadingState } from "@/components/ui/loading-state"
 import { ErrorState } from "@/components/ui/error-state"
 import { EmptyState } from "@/components/ui/empty-state"
 import { NormalizationStatusBadge } from "./normalization-status-badge"
-import { ApiError, DEFAULT_RECENT_EVENTS_LIMIT, isNetworkError, queryNormalizedEvents } from "@/lib/api"
+import {
+  ApiError,
+  DEFAULT_RECENT_EVENTS_LIMIT,
+  MAX_QUERY_OFFSET,
+  isNetworkError,
+  queryNormalizedEvents,
+} from "@/lib/api"
 import type {
   EventCategory,
   NormalizedEventListResult,
+  NormalizedEventSortField,
   NormalizedEventsQueryParams,
   NormalizedSecurityEvent,
   SecurityEventSource,
@@ -28,22 +35,30 @@ interface NormalizedEventExplorerProps {
 
 interface FilterState {
   appliedSearch: string
+  appliedEventType: string
   source_type: string
   normalization_status: string
   event_category: string
   severity: string
-  sort_by: "created_at" | "timestamp" | "severity"
+  start_time: string
+  end_time: string
+  sort_by: NormalizedEventSortField
   sort_order: "asc" | "desc"
   limit: number
   offset: number
 }
 
+const EVENT_TYPE_REGEX = /^[a-z0-9_]+(\.[a-z0-9_]+)*$/
+
 const DEFAULT_FILTERS: FilterState = {
   appliedSearch: "",
+  appliedEventType: "",
   source_type: "",
   normalization_status: "",
   event_category: "",
   severity: "",
+  start_time: "",
+  end_time: "",
   sort_by: "created_at",
   sort_order: "desc",
   limit: DEFAULT_RECENT_EVENTS_LIMIT,
@@ -65,7 +80,6 @@ const STATUS_OPTIONS = [
   { value: "normalized_with_warnings", label: "Normalized with Warnings" },
   { value: "failed", label: "Normalization Failed" },
   { value: "unsupported", label: "Unsupported Source" },
-  { value: "pending", label: "Pending Normalization" },
 ]
 
 const CATEGORY_OPTIONS: { value: EventCategory; label: string }[] = [
@@ -113,6 +127,10 @@ export function NormalizedEventExplorer({
   onSelectNormalizedEvent,
 }: NormalizedEventExplorerProps) {
   const [searchInput, setSearchInput] = React.useState("")
+  const [eventTypeInput, setEventTypeInput] = React.useState("")
+  const [startLocalInput, setStartLocalInput] = React.useState("")
+  const [endLocalInput, setEndLocalInput] = React.useState("")
+  const [filterValidationError, setFilterValidationError] = React.useState<string | null>(null)
   const [filters, setFilters] = React.useState<FilterState>(DEFAULT_FILTERS)
   const [result, setResult] = React.useState<NormalizedEventListResult | null>(null)
   const [isLoading, setIsLoading] = React.useState(true)
@@ -122,10 +140,13 @@ export function NormalizedEventExplorer({
 
   const hasActiveFilters = Boolean(
     filters.appliedSearch ||
+      filters.appliedEventType ||
       filters.source_type ||
       filters.normalization_status ||
       filters.event_category ||
       filters.severity ||
+      filters.start_time ||
+      filters.end_time ||
       filters.sort_by !== DEFAULT_FILTERS.sort_by ||
       filters.sort_order !== DEFAULT_FILTERS.sort_order ||
       filters.offset > 0
@@ -137,6 +158,7 @@ export function NormalizedEventExplorer({
       limit: state.limit,
       offset: state.offset,
       search: state.appliedSearch || undefined,
+      event_type: state.appliedEventType || undefined,
       source_type: state.source_type || undefined,
       normalization_status: state.normalization_status || undefined,
       event_category: state.event_category || undefined,
@@ -144,6 +166,8 @@ export function NormalizedEventExplorer({
         parsedSeverity && parsedSeverity >= 1 && parsedSeverity <= 5
           ? parsedSeverity
           : undefined,
+      start_time: state.start_time || undefined,
+      end_time: state.end_time || undefined,
       sort_by: state.sort_by,
       sort_order: state.sort_order,
     }
@@ -182,25 +206,68 @@ export function NormalizedEventExplorer({
     setLocalRefreshTick((t) => t + 1)
   }
 
+  const toUtcIsoOrNull = (localValue: string): string | null => {
+    const trimmed = localValue.trim()
+    if (!trimmed) return null
+    const parsed = new Date(trimmed)
+    if (Number.isNaN(parsed.getTime())) return null
+    return parsed.toISOString()
+  }
+
   const handleSearchSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
+    setFilterValidationError(null)
+
+    const cleanedEventType = eventTypeInput.trim().toLowerCase()
+    if (cleanedEventType && !EVENT_TYPE_REGEX.test(cleanedEventType)) {
+      setFilterValidationError(
+        "Event Type must use lowercase dot-notation (e.g. alert.ids or process.create)."
+      )
+      return
+    }
+
+    const startIso = toUtcIsoOrNull(startLocalInput)
+    if (startLocalInput.trim() && !startIso) {
+      setFilterValidationError("Start time must be a valid date/time.")
+      return
+    }
+
+    const endIso = toUtcIsoOrNull(endLocalInput)
+    if (endLocalInput.trim() && !endIso) {
+      setFilterValidationError("End time must be a valid date/time.")
+      return
+    }
+
+    if (startIso && endIso && startIso > endIso) {
+      setFilterValidationError("Start time must be earlier than or equal to End time.")
+      return
+    }
+
     setIsLoading(true)
     setError(null)
     setFilters((prev) => ({
       ...prev,
       appliedSearch: searchInput.trim(),
+      appliedEventType: cleanedEventType,
+      start_time: startIso ?? "",
+      end_time: endIso ?? "",
       offset: 0,
     }))
   }
 
   const handleClearFilters = () => {
     setSearchInput("")
+    setEventTypeInput("")
+    setStartLocalInput("")
+    setEndLocalInput("")
+    setFilterValidationError(null)
     setIsLoading(true)
     setError(null)
     setFilters(DEFAULT_FILTERS)
   }
 
   const handleFilterChange = <K extends keyof FilterState>(key: K, value: FilterState[K]) => {
+    setFilterValidationError(null)
     setIsLoading(true)
     setError(null)
     setFilters((prev) => ({
@@ -217,9 +284,8 @@ export function NormalizedEventExplorer({
   const canPrev = filters.offset > 0 && !isLoading
   const canNext =
     !isLoading &&
-    (typeof total === "number"
-      ? filters.offset + items.length < total
-      : items.length >= filters.limit)
+    Boolean(result?.has_more) &&
+    filters.offset + filters.limit <= MAX_QUERY_OFFSET
 
   const selectClass =
     "h-9 rounded-md border border-input bg-background px-2.5 text-xs text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -239,7 +305,13 @@ export function NormalizedEventExplorer({
             variant="outline"
             size="sm"
             onClick={handleClearFilters}
-            disabled={!hasActiveFilters && !searchInput}
+            disabled={
+              !hasActiveFilters &&
+              !searchInput &&
+              !eventTypeInput &&
+              !startLocalInput &&
+              !endLocalInput
+            }
           >
             <FilterX className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
             Clear Filters
@@ -264,24 +336,59 @@ export function NormalizedEventExplorer({
       <CardContent className="space-y-4">
         {/* Search & Filter Controls */}
         <div className="space-y-3 rounded-md border bg-muted/20 p-3">
-          <form onSubmit={handleSearchSubmit} className="flex flex-col gap-2 sm:flex-row">
-            <div className="relative flex-1">
-              <Search
-                className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground"
-                aria-hidden="true"
-              />
+          <form onSubmit={handleSearchSubmit} className="space-y-2">
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <div className="relative flex-1">
+                <Search
+                  className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground"
+                  aria-hidden="true"
+                />
+                <input
+                  type="search"
+                  aria-label="Search normalized events"
+                  placeholder="Search host, IP, event type, process, domain, or ID..."
+                  value={searchInput}
+                  onChange={(e) => setSearchInput(e.target.value)}
+                  className="h-9 w-full rounded-md border border-input bg-background pl-9 pr-3 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                />
+              </div>
               <input
-                type="search"
-                aria-label="Search normalized events"
-                placeholder="Search host, IP, event type, process, domain, or ID..."
-                value={searchInput}
-                onChange={(e) => setSearchInput(e.target.value)}
-                className="h-9 w-full rounded-md border border-input bg-background pl-9 pr-3 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                type="text"
+                aria-label="Filter by event type"
+                placeholder="Event type (e.g. alert.ids)"
+                value={eventTypeInput}
+                onChange={(e) => setEventTypeInput(e.target.value)}
+                className="h-9 rounded-md border border-input bg-background px-3 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring sm:w-48"
+              />
+              <Button type="submit" size="sm" disabled={isLoading}>
+                Search
+              </Button>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <label htmlFor="explorer-start-time">From (UTC/local):</label>
+              <input
+                id="explorer-start-time"
+                type="datetime-local"
+                aria-label="Start time"
+                value={startLocalInput}
+                onChange={(e) => setStartLocalInput(e.target.value)}
+                className={selectClass}
+              />
+              <label htmlFor="explorer-end-time">To:</label>
+              <input
+                id="explorer-end-time"
+                type="datetime-local"
+                aria-label="End time"
+                value={endLocalInput}
+                onChange={(e) => setEndLocalInput(e.target.value)}
+                className={selectClass}
               />
             </div>
-            <Button type="submit" size="sm" disabled={isLoading}>
-              Search
-            </Button>
+            {filterValidationError && (
+              <p role="alert" className="text-xs text-destructive">
+                {filterValidationError}
+              </p>
+            )}
           </form>
 
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-6">
@@ -352,6 +459,9 @@ export function NormalizedEventExplorer({
               <option value="created_at">Sort: Created At</option>
               <option value="timestamp">Sort: Event Time</option>
               <option value="severity">Sort: Severity</option>
+              <option value="source_type">Sort: Source Type</option>
+              <option value="event_category">Sort: Category</option>
+              <option value="normalization_status">Sort: Norm. Status</option>
             </select>
 
             <select

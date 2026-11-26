@@ -307,6 +307,10 @@ export const EVENT_INGEST_ENDPOINT = "/api/v1/events/ingest";
 export const EVENTS_LIST_ENDPOINT = "/api/v1/events/ingested";
 export const EVENTS_NORMALIZED_ENDPOINT = "/api/v1/events/normalized";
 export const DEFAULT_RECENT_EVENTS_LIMIT = 20;
+export const MAX_QUERY_LIMIT = 100;
+export const MAX_QUERY_OFFSET = 10_000;
+export const MAX_SEARCH_LENGTH = 128;
+export const MAX_EVENT_TYPE_LENGTH = 64;
 
 /**
  * Submits a JSON security event payload to POST /api/v1/events/ingest.
@@ -394,16 +398,19 @@ export function buildNormalizedEventsQueryString(
   params: NormalizedEventsQueryParams = {}
 ): string {
   const searchParams = new URLSearchParams();
-  const safeLimit = Math.max(1, Math.min(params.limit ?? DEFAULT_RECENT_EVENTS_LIMIT, 100));
+  const safeLimit = Math.max(1, Math.min(params.limit ?? DEFAULT_RECENT_EVENTS_LIMIT, MAX_QUERY_LIMIT));
   searchParams.set("limit", String(safeLimit));
 
-  if (typeof params.offset === "number" && params.offset > 0) {
-    searchParams.set("offset", String(Math.floor(params.offset)));
+  if (typeof params.offset === "number" && !Number.isNaN(params.offset)) {
+    const safeOffset = Math.max(0, Math.min(Math.floor(params.offset), MAX_QUERY_OFFSET));
+    if (safeOffset > 0) {
+      searchParams.set("offset", String(safeOffset));
+    }
   }
 
   const trimmedSearch = params.search?.trim();
   if (trimmedSearch) {
-    searchParams.set("search", trimmedSearch);
+    searchParams.set("search", trimmedSearch.slice(0, MAX_SEARCH_LENGTH));
   }
 
   if (params.source_type) {
@@ -418,8 +425,23 @@ export function buildNormalizedEventsQueryString(
     searchParams.set("event_category", params.event_category);
   }
 
+  const cleanedEventType = params.event_type?.trim().toLowerCase();
+  if (cleanedEventType) {
+    searchParams.set("event_type", cleanedEventType.slice(0, MAX_EVENT_TYPE_LENGTH));
+  }
+
   if (typeof params.severity === "number" && params.severity >= 1 && params.severity <= 5) {
     searchParams.set("severity", String(params.severity));
+  }
+
+  const trimmedStart = params.start_time?.trim();
+  if (trimmedStart) {
+    searchParams.set("start_time", trimmedStart);
+  }
+
+  const trimmedEnd = params.end_time?.trim();
+  if (trimmedEnd) {
+    searchParams.set("end_time", trimmedEnd);
   }
 
   if (params.sort_by) {
@@ -440,8 +462,16 @@ export function buildNormalizedEventsQueryString(
 export const queryNormalizedEvents = async (
   params: NormalizedEventsQueryParams = {}
 ): Promise<NormalizedEventListResult> => {
-  const safeLimit = Math.max(1, Math.min(params.limit ?? DEFAULT_RECENT_EVENTS_LIMIT, 100));
-  const queryString = buildNormalizedEventsQueryString({ ...params, limit: safeLimit });
+  const safeLimit = Math.max(1, Math.min(params.limit ?? DEFAULT_RECENT_EVENTS_LIMIT, MAX_QUERY_LIMIT));
+  const safeOffset =
+    typeof params.offset === "number" && !Number.isNaN(params.offset)
+      ? Math.max(0, Math.min(Math.floor(params.offset), MAX_QUERY_OFFSET))
+      : 0;
+  const queryString = buildNormalizedEventsQueryString({
+    ...params,
+    limit: safeLimit,
+    offset: safeOffset,
+  });
 
   const res = await ApiClient.get<NormalizedEventResponse[] | NormalizedEventsEnvelope>(
     `${EVENTS_NORMALIZED_ENDPOINT}?${queryString}`,
@@ -457,7 +487,8 @@ export const queryNormalizedEvents = async (
       items,
       count: items.length,
       limit: safeLimit,
-      offset: params.offset ?? 0,
+      offset: safeOffset,
+      has_more: false,
     };
   }
 
@@ -466,12 +497,21 @@ export const queryNormalizedEvents = async (
       .filter((item): item is NormalizedEventResponse => Boolean(item && typeof item === "object"))
       .slice(0, safeLimit)
       .map(mapNormalizedEventResponse);
+    const resolvedTotal = typeof res.total === "number" ? res.total : undefined;
+    const resolvedOffset = typeof res.offset === "number" ? res.offset : safeOffset;
+    const resolvedHasMore =
+      typeof res.has_more === "boolean"
+        ? res.has_more
+        : typeof resolvedTotal === "number"
+          ? resolvedOffset + items.length < resolvedTotal
+          : false;
     return {
       items,
       count: typeof res.count === "number" ? res.count : items.length,
       limit: typeof res.limit === "number" ? res.limit : safeLimit,
-      total: typeof res.total === "number" ? res.total : undefined,
-      offset: typeof res.offset === "number" ? res.offset : (params.offset ?? 0),
+      total: resolvedTotal,
+      offset: resolvedOffset,
+      has_more: resolvedHasMore,
     };
   }
 
@@ -479,7 +519,8 @@ export const queryNormalizedEvents = async (
     items: [],
     count: 0,
     limit: safeLimit,
-    offset: params.offset ?? 0,
+    offset: safeOffset,
+    has_more: false,
   };
 };
 

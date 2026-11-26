@@ -7,19 +7,26 @@ bounded retrieval endpoints.
 """
 
 import re
-from datetime import datetime, timezone
-from enum import Enum
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator
 
-from app.events.schemas import (
-    EventCategoryEnum,
-    IngestionEnvelope,
-    NormalizationStatusEnum,
-    SourceTypeEnum,
+from app.events.query_contract import (
+    DEFAULT_QUERY_LIMIT,
+    DEFAULT_QUERY_OFFSET,
+    MAX_EVENT_TYPE_LENGTH,
+    MAX_QUERY_LIMIT,
+    MAX_QUERY_OFFSET,
+    MAX_SEARCH_LENGTH,
+    NormalizedEventQueryParams,
+    NormalizedEventSortField,
+    SortOrderEnum,
 )
+from app.events.schemas import IngestionEnvelope, SourceTypeEnum
+
+EventSortFieldEnum = NormalizedEventSortField
 
 MAX_RAW_PAYLOAD_BYTES = 65_536  # 64 KiB per Security Data Contract §3 Stage 1
 RAW_HASH_PATTERN = re.compile(r"^sha256:[0-9a-fA-F]{64}$")
@@ -167,109 +174,6 @@ class NormalizedEventResponse(BaseModel):
     normalization_errors: List[str] = Field(default_factory=list)
     normalization_warnings: List[str] = Field(default_factory=list)
     created_at: str
-
-
-class EventSortFieldEnum(str, Enum):
-    """Approved sortable fields on normalized_events."""
-
-    CREATED_AT = "created_at"
-    TIMESTAMP = "timestamp"
-    SEVERITY = "severity"
-    SOURCE_TYPE = "source_type"
-    NORMALIZATION_STATUS = "normalization_status"
-    EVENT_CATEGORY = "event_category"
-    EVENT_TYPE = "event_type"
-
-
-class SortOrderEnum(str, Enum):
-    """Approved sort directions."""
-
-    DESC = "desc"
-    ASC = "asc"
-
-
-def _normalize_query_utc_iso(value: str, field_name: str) -> str:
-    """Validate an ISO 8601 timestamp with timezone and normalize to UTC ms format."""
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{field_name} must be a non-empty ISO 8601 timestamp")
-    raw = value.strip()
-    normalized = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
-    try:
-        parsed = datetime.fromisoformat(normalized)
-    except ValueError as exc:
-        raise ValueError(f"{field_name} must be a valid ISO 8601 timestamp") from exc
-    if parsed.tzinfo is None:
-        raise ValueError(f"{field_name} must include a UTC or timezone offset")
-    utc_dt = parsed.astimezone(timezone.utc)
-    ms = utc_dt.microsecond // 1000
-    return utc_dt.strftime("%Y-%m-%dT%H:%M:%S") + f".{ms:03d}Z"
-
-
-class NormalizedEventQueryParams(BaseModel):
-    """Validated query parameters for filtering, searching, sorting, and paginating normalized events."""
-
-    limit: int = Field(default=20, ge=1, le=100)
-    offset: int = Field(default=0, ge=0, le=100_000)
-    source_type: Optional[SourceTypeEnum] = None
-    normalization_status: Optional[NormalizationStatusEnum] = None
-    event_category: Optional[EventCategoryEnum] = None
-    event_type: Optional[str] = Field(default=None, max_length=64)
-    severity: Optional[int] = Field(default=None, ge=1, le=5)
-    min_severity: Optional[int] = Field(default=None, ge=1, le=5)
-    max_severity: Optional[int] = Field(default=None, ge=1, le=5)
-    start_time: Optional[str] = None
-    end_time: Optional[str] = None
-    search: Optional[str] = Field(default=None, max_length=128)
-    sort_by: EventSortFieldEnum = EventSortFieldEnum.CREATED_AT
-    sort_order: SortOrderEnum = SortOrderEnum.DESC
-
-    @field_validator("event_type")
-    @classmethod
-    def validate_event_type(cls, value: Optional[str]) -> Optional[str]:
-        if value is None:
-            return None
-        stripped = value.strip()
-        if not stripped:
-            raise ValueError("event_type must not be empty whitespace")
-        return stripped
-
-    @field_validator("search")
-    @classmethod
-    def normalize_search(cls, value: Optional[str]) -> Optional[str]:
-        if value is None:
-            return None
-        stripped = value.strip()
-        return stripped or None
-
-    @field_validator("start_time")
-    @classmethod
-    def validate_start_time(cls, value: Optional[str]) -> Optional[str]:
-        if value is None:
-            return None
-        return _normalize_query_utc_iso(value, "start_time")
-
-    @field_validator("end_time")
-    @classmethod
-    def validate_end_time(cls, value: Optional[str]) -> Optional[str]:
-        if value is None:
-            return None
-        return _normalize_query_utc_iso(value, "end_time")
-
-    @model_validator(mode="after")
-    def validate_ranges(self) -> "NormalizedEventQueryParams":
-        if (
-            self.min_severity is not None
-            and self.max_severity is not None
-            and self.min_severity > self.max_severity
-        ):
-            raise ValueError("min_severity must be less than or equal to max_severity")
-        if (
-            self.start_time is not None
-            and self.end_time is not None
-            and self.start_time > self.end_time
-        ):
-            raise ValueError("start_time must be less than or equal to end_time")
-        return self
 
 
 class NormalizedEventListResponse(BaseModel):

@@ -51,7 +51,12 @@ beforeEach(() => {
 
 describe('NormalizedEventExplorer (mocked API)', () => {
   it('renders loading state then empty state when no events exist', async () => {
-    let resolveQuery!: (val: { items: NormalizedSecurityEvent[]; count: number; limit: number }) => void
+    let resolveQuery!: (val: {
+      items: NormalizedSecurityEvent[]
+      count: number
+      limit: number
+      has_more: boolean
+    }) => void
     mockedQuery.mockImplementationOnce(
       () => new Promise((resolve) => { resolveQuery = resolve })
     )
@@ -59,14 +64,14 @@ describe('NormalizedEventExplorer (mocked API)', () => {
     render(<NormalizedEventExplorer />)
     expect(screen.getByText(/querying normalized security events/i)).toBeInTheDocument()
 
-    resolveQuery({ items: [], count: 0, limit: 20 })
+    resolveQuery({ items: [], count: 0, limit: 20, has_more: false })
     expect(await screen.findByText('No normalized events yet')).toBeInTheDocument()
   })
 
   it('submits search query to backend and displays result count', async () => {
     mockedQuery
-      .mockResolvedValueOnce({ items: [sampleEvent], count: 1, limit: 20, total: 15 })
-      .mockResolvedValueOnce({ items: [sampleEvent], count: 1, limit: 20, total: 1 })
+      .mockResolvedValueOnce({ items: [sampleEvent], count: 1, limit: 20, total: 15, has_more: true })
+      .mockResolvedValueOnce({ items: [sampleEvent], count: 1, limit: 20, total: 1, has_more: false })
 
     render(<NormalizedEventExplorer />)
 
@@ -84,8 +89,31 @@ describe('NormalizedEventExplorer (mocked API)', () => {
     })
   })
 
+  it('validates event_type dot-notation client-side and submits valid event_type', async () => {
+    mockedQuery.mockResolvedValue({ items: [], count: 0, limit: 20, has_more: false })
+
+    render(<NormalizedEventExplorer />)
+    await screen.findByText('No normalized events yet')
+
+    const eventTypeInput = screen.getByLabelText(/filter by event type/i)
+    fireEvent.change(eventTypeInput, { target: { value: 'alert.ids; DROP TABLE' } })
+    fireEvent.click(screen.getByRole('button', { name: /^search$/i }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/lowercase dot-notation/i)
+    expect(mockedQuery).toHaveBeenCalledTimes(1)
+
+    fireEvent.change(eventTypeInput, { target: { value: 'ALERT.IDS' } })
+    fireEvent.click(screen.getByRole('button', { name: /^search$/i }))
+
+    await waitFor(() => {
+      expect(mockedQuery).toHaveBeenLastCalledWith(
+        expect.objectContaining({ event_type: 'alert.ids', offset: 0 })
+      )
+    })
+  })
+
   it('sends combined filters and sort controls to backend', async () => {
-    mockedQuery.mockResolvedValue({ items: [], count: 0, limit: 20 })
+    mockedQuery.mockResolvedValue({ items: [], count: 0, limit: 20, has_more: false })
 
     render(<NormalizedEventExplorer />)
     await screen.findByText('No normalized events yet')
@@ -103,7 +131,7 @@ describe('NormalizedEventExplorer (mocked API)', () => {
       target: { value: '5' },
     })
     fireEvent.change(screen.getByLabelText(/sort normalized events by/i), {
-      target: { value: 'severity' },
+      target: { value: 'normalization_status' },
     })
     fireEvent.change(screen.getByLabelText(/sort order/i), {
       target: { value: 'asc' },
@@ -116,7 +144,7 @@ describe('NormalizedEventExplorer (mocked API)', () => {
           normalization_status: 'failed',
           event_category: 'network',
           severity: 5,
-          sort_by: 'severity',
+          sort_by: 'normalization_status',
           sort_order: 'asc',
           offset: 0,
         })
@@ -128,7 +156,7 @@ describe('NormalizedEventExplorer (mocked API)', () => {
   })
 
   it('clears all active filters and resets pagination', async () => {
-    mockedQuery.mockResolvedValue({ items: [], count: 0, limit: 20 })
+    mockedQuery.mockResolvedValue({ items: [], count: 0, limit: 20, has_more: false })
 
     render(<NormalizedEventExplorer />)
     await screen.findByText('No normalized events yet')
@@ -156,7 +184,7 @@ describe('NormalizedEventExplorer (mocked API)', () => {
     })
   })
 
-  it('handles pagination Next and Previous controls', async () => {
+  it('handles pagination Next and Previous controls using backend has_more', async () => {
     const page1Items = Array.from({ length: 20 }, (_, i) => ({
       ...sampleEvent,
       event_id: `evt-${i}`,
@@ -164,8 +192,22 @@ describe('NormalizedEventExplorer (mocked API)', () => {
     }))
 
     mockedQuery
-      .mockResolvedValueOnce({ items: page1Items, count: 20, limit: 20, total: 25 })
-      .mockResolvedValueOnce({ items: [sampleEvent], count: 1, limit: 20, total: 25 })
+      .mockResolvedValueOnce({
+        items: page1Items,
+        count: 20,
+        limit: 20,
+        total: 25,
+        offset: 0,
+        has_more: true,
+      })
+      .mockResolvedValueOnce({
+        items: [sampleEvent],
+        count: 1,
+        limit: 20,
+        total: 25,
+        offset: 20,
+        has_more: false,
+      })
 
     render(<NormalizedEventExplorer />)
 
@@ -192,7 +234,7 @@ describe('NormalizedEventExplorer (mocked API)', () => {
   it('renders API error state and retries on click', async () => {
     mockedQuery
       .mockRejectedValueOnce(new ApiError(500, 'Internal Server Error'))
-      .mockResolvedValueOnce({ items: [sampleEvent], count: 1, limit: 20 })
+      .mockResolvedValueOnce({ items: [sampleEvent], count: 1, limit: 20, has_more: false })
 
     render(<NormalizedEventExplorer />)
 
@@ -201,11 +243,88 @@ describe('NormalizedEventExplorer (mocked API)', () => {
 
     expect(await screen.findByText('ws-01.corp.local')).toBeInTheDocument()
   })
+
+  it('guards against reversed time ranges client-side and submits valid UTC bounds', async () => {
+    mockedQuery.mockResolvedValue({ items: [], count: 0, limit: 20, has_more: false })
+
+    render(<NormalizedEventExplorer />)
+    await screen.findByText('No normalized events yet')
+
+    fireEvent.change(screen.getByLabelText(/start time/i), {
+      target: { value: '2026-11-26T12:00' },
+    })
+    fireEvent.change(screen.getByLabelText(/end time/i), {
+      target: { value: '2026-11-26T10:00' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /^search$/i }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/earlier than or equal/i)
+    expect(mockedQuery).toHaveBeenCalledTimes(1)
+
+    fireEvent.change(screen.getByLabelText(/end time/i), {
+      target: { value: '2026-11-26T14:00' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /^search$/i }))
+
+    await waitFor(() => {
+      expect(mockedQuery).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          start_time: expect.stringMatching(/Z$/),
+          end_time: expect.stringMatching(/Z$/),
+        })
+      )
+    })
+  })
+
+  it('ignores stale out-of-order query responses', async () => {
+    let resolveFirst!: (val: {
+      items: NormalizedSecurityEvent[]
+      count: number
+      limit: number
+      has_more: boolean
+    }) => void
+    let resolveSecond!: (val: {
+      items: NormalizedSecurityEvent[]
+      count: number
+      limit: number
+      has_more: boolean
+    }) => void
+
+    mockedQuery
+      .mockImplementationOnce(() => new Promise((r) => { resolveFirst = r }))
+      .mockImplementationOnce(() => new Promise((r) => { resolveSecond = r }))
+
+    render(<NormalizedEventExplorer />)
+
+    fireEvent.change(screen.getByLabelText(/filter by source type/i), {
+      target: { value: 'zeek' },
+    })
+
+    resolveSecond({
+      items: [{ ...sampleEvent, event_id: 'evt-new', host: 'fresh-zeek-host' }],
+      count: 1,
+      limit: 20,
+      has_more: false,
+    })
+    expect(await screen.findByText('fresh-zeek-host')).toBeInTheDocument()
+
+    resolveFirst({
+      items: [{ ...sampleEvent, event_id: 'evt-stale', host: 'stale-initial-host' }],
+      count: 1,
+      limit: 20,
+      has_more: false,
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText('fresh-zeek-host')).toBeInTheDocument()
+      expect(screen.queryByText('stale-initial-host')).not.toBeInTheDocument()
+    })
+  })
 })
 
 describe('EventsPage Explorer Detail Selection (mocked API)', () => {
   it('loads normalized detail record when selecting an event in NormalizedEventExplorer', async () => {
-    mockedQuery.mockResolvedValueOnce({ items: [sampleEvent], count: 1, limit: 20 })
+    mockedQuery.mockResolvedValueOnce({ items: [sampleEvent], count: 1, limit: 20, has_more: false })
     mockedFetchById.mockResolvedValueOnce({
       ...sampleEvent,
       process: 'powershell.exe',

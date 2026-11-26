@@ -33,7 +33,14 @@ const mockedQueryNormalized = queryNormalizedEvents as jest.MockedFunction<typeo
 beforeEach(() => {
   jest.clearAllMocks()
   mockedFetchNormalized.mockResolvedValue([])
-  mockedQueryNormalized.mockResolvedValue({ items: [], count: 0, limit: 20 })
+  mockedQueryNormalized.mockResolvedValue({
+    items: [],
+    count: 0,
+    limit: 20,
+    total: 0,
+    offset: 0,
+    has_more: false,
+  })
 })
 
 // ---------------------------------------------------------------------------

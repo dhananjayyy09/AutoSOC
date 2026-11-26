@@ -17,6 +17,8 @@ export {
   EVENTS_LIST_ENDPOINT,
   EVENTS_NORMALIZED_ENDPOINT,
   DEFAULT_RECENT_EVENTS_LIMIT,
+  MAX_QUERY_LIMIT,
+  MAX_QUERY_OFFSET,
 } from "@/lib/api";
 export type {
   SecurityEventSource,
@@ -28,6 +30,8 @@ export type {
   NormalizedEventsEnvelope,
   NormalizedEventsQueryParams,
   NormalizedEventListResult,
+  NormalizedEventSortField,
+  PersistedNormalizationStatus,
   BackendValidationErrorItem,
   EventCategory,
   EventProtocol,

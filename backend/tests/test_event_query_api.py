@@ -38,15 +38,16 @@ from sqlalchemy.pool import NullPool
 from main import app
 from app.core.config import settings
 from app.db.session import get_db
-from app.events.api_schemas import (
-    EventSortFieldEnum,
-    NormalizedEventQueryParams,
-    SortOrderEnum,
-)
 from app.events.models import NormalizedEvent, RawEventEnvelope
+from app.events.query_contract import (
+    MAX_QUERY_OFFSET,
+    NormalizedEventQueryParams,
+    NormalizedEventSortField,
+    SortOrderEnum,
+    escape_like_pattern,
+)
 from app.events.repository import (
     _build_normalized_event_filters,
-    _escape_like,
     _resolve_sort_clauses,
 )
 from app.events.validation import compute_raw_hash
@@ -63,18 +64,17 @@ def test_query_params_defaults_and_valid_ranges():
     params = NormalizedEventQueryParams()
     assert params.limit == 20
     assert params.offset == 0
-    assert params.sort_by == EventSortFieldEnum.CREATED_AT
+    assert params.sort_by == NormalizedEventSortField.CREATED_AT
     assert params.sort_order == SortOrderEnum.DESC
 
     ranged = NormalizedEventQueryParams(
         limit=100,
-        offset=40,
-        min_severity=2,
-        max_severity=4,
+        offset=MAX_QUERY_OFFSET,
+        severity=4,
         start_time="2026-11-25T10:00:00+05:30",
         end_time="2026-11-25T12:00:00Z",
         search="  powershell.exe  ",
-        event_type="  process.create ",
+        event_type="  PROCESS.CREATE ",
     )
     assert ranged.start_time == "2026-11-25T04:30:00.000Z"
     assert ranged.end_time == "2026-11-25T12:00:00.000Z"
@@ -88,13 +88,13 @@ def test_query_params_defaults_and_valid_ranges():
         {"limit": 0},
         {"limit": 101},
         {"offset": -1},
+        {"offset": MAX_QUERY_OFFSET + 1},
         {"severity": 0},
         {"severity": 6},
-        {"min_severity": 4, "max_severity": 2},
         {"start_time": "2026-11-25T10:00:00"},  # naive timestamp rejected
         {"start_time": "not-a-timestamp"},
         {"start_time": "2026-11-25T12:00:00Z", "end_time": "2026-11-25T11:00:00Z"},
-        {"event_type": "   "},
+        {"event_type": "alert.ids; DROP TABLE normalized_events;--"},
         {"search": "x" * 129},
     ],
 )
@@ -104,7 +104,7 @@ def test_query_params_rejects_invalid_inputs(kwargs: Dict[str, Any]):
 
 
 def test_escape_like_and_sql_parameterization():
-    assert _escape_like(r"100%_test\path") == r"100\%\_test\\path"
+    assert escape_like_pattern(r"100%_test\path") == r"100\%\_test\\path"
 
     params = NormalizedEventQueryParams(
         search="'; DROP TABLE normalized_events; --",
@@ -121,7 +121,7 @@ def test_escape_like_and_sql_parameterization():
     assert "DROP TABLE" not in compiled_sql
     assert "ILIKE" in compiled_sql
 
-    clauses = _resolve_sort_clauses(EventSortFieldEnum.SEVERITY, SortOrderEnum.ASC)
+    clauses = _resolve_sort_clauses(NormalizedEventSortField.SEVERITY, SortOrderEnum.ASC)
     assert len(clauses) == 2
 
 
@@ -153,16 +153,27 @@ def test_migration_003_defines_expected_query_indexes():
     [
         {"limit": 0},
         {"limit": 101},
+        {"limit": "abc"},
         {"offset": -1},
+        {"offset": MAX_QUERY_OFFSET + 1},
+        {"offset": "abc"},
         {"source_type": "invalid_source"},
+        {"source_type": "   "},
         {"normalization_status": "unknown_status"},
         {"event_category": "bad_cat"},
-        {"severity": 9},
-        {"min_severity": 4, "max_severity": 2},
+        {"event_type": "alert.ids; DROP TABLE"},
+        {"event_type": "a" * 65},
+        {"severity": 0},
+        {"severity": 6},
+        {"severity": "high"},
         {"start_time": "2026-11-25T10:00:00"},
+        {"end_time": "2026-11-25T10:00:00"},
         {"end_time": "bad-date"},
         {"start_time": "2026-11-25T12:00:00Z", "end_time": "2026-11-25T10:00:00Z"},
+        {"search": "x" * 129},
         {"sort_by": "raw_payload"},
+        {"sort_by": "event_type"},
+        {"sort_by": "id; DROP TABLE"},
         {"sort_order": "random"},
     ],
 )
@@ -266,10 +277,14 @@ async def _seed_postgres_events() -> List[str]:
             "source_ip": "192.0.2.10",
             "destination_ip": "198.51.100.42",
             "process": None,
+            "file_hash": "sha256:" + ("f" * 64),
             "domain": "evil.example.invalid",
             "command_line": None,
             "severity": 5,
             "normalization_status": "normalized",
+            "event_metadata": {"pipeline_version": "0.2.0", "forbidden_meta": "META_FORBIDDEN_MARKER"},
+            "normalization_warnings": [],
+            "normalization_errors": [],
             "created_at": base_created + timedelta(seconds=1),
         },
         {
@@ -285,10 +300,14 @@ async def _seed_postgres_events() -> List[str]:
             "source_ip": None,
             "destination_ip": None,
             "process": "powershell.exe",
+            "file_hash": "sha256:" + ("a" * 64),
             "domain": None,
-            "command_line": "powershell.exe -NoProfile 100%_check",
+            "command_line": r"powershell.exe -NoProfile 100%_check C:\Temp\run.bat",
             "severity": 3,
             "normalization_status": "normalized",
+            "event_metadata": {"pipeline_version": "0.2.0"},
+            "normalization_warnings": [],
+            "normalization_errors": [],
             "created_at": base_created + timedelta(seconds=2),
         },
         {
@@ -296,7 +315,7 @@ async def _seed_postgres_events() -> List[str]:
             "source_type": "zeek",
             "raw_payload": json.dumps({"uid": "Czeek03"}),
             "event_id": str(uuid4()),
-            "event_timestamp": "2026-11-25T12:00:00.000Z",
+            "event_timestamp": "2026-11-25T11:00:00.000Z",
             "event_category": "network",
             "event_type": "network.dns",
             "host": "zeek-core-01",
@@ -304,10 +323,14 @@ async def _seed_postgres_events() -> List[str]:
             "source_ip": "10.0.0.15",
             "destination_ip": "198.51.100.53",
             "process": None,
+            "file_hash": None,
             "domain": "c2.example.invalid",
             "command_line": None,
             "severity": 2,
             "normalization_status": "normalized_with_warnings",
+            "event_metadata": {"pipeline_version": "0.2.0"},
+            "normalization_warnings": ["WARN_FORBIDDEN_MARKER"],
+            "normalization_errors": [],
             "created_at": base_created + timedelta(seconds=2),  # tie created_at with 02
         },
         {
@@ -323,10 +346,14 @@ async def _seed_postgres_events() -> List[str]:
             "source_ip": None,
             "destination_ip": None,
             "process": None,
+            "file_hash": None,
             "domain": None,
             "command_line": None,
             "severity": None,
             "normalization_status": "failed",
+            "event_metadata": {"pipeline_version": "0.2.0"},
+            "normalization_warnings": [],
+            "normalization_errors": ["ERR_FORBIDDEN_MARKER"],
             "created_at": base_created + timedelta(seconds=4),
         },
         {
@@ -342,10 +369,14 @@ async def _seed_postgres_events() -> List[str]:
             "source_ip": None,
             "destination_ip": None,
             "process": None,
+            "file_hash": None,
             "domain": None,
             "command_line": None,
             "severity": None,
             "normalization_status": "unsupported",
+            "event_metadata": {"pipeline_version": "0.2.0"},
+            "normalization_warnings": [],
+            "normalization_errors": ["Unsupported custom format"],
             "created_at": base_created + timedelta(seconds=5),
         },
     ]
@@ -385,13 +416,14 @@ async def _seed_postgres_events() -> List[str]:
                     source_ip=fx["source_ip"],
                     destination_ip=fx["destination_ip"],
                     process=fx["process"],
+                    file_hash=fx["file_hash"],
                     domain=fx["domain"],
                     command_line=fx["command_line"],
                     severity=fx["severity"],
-                    event_metadata={"pipeline_version": "0.2.0"},
+                    event_metadata=fx["event_metadata"],
                     normalization_status=fx["normalization_status"],
-                    normalization_errors=[],
-                    normalization_warnings=[],
+                    normalization_errors=fx["normalization_errors"],
+                    normalization_warnings=fx["normalization_warnings"],
                     created_at=fx["created_at"],
                 )
                 session.add(norm)
@@ -486,9 +518,26 @@ def test_live_postgres_query_pagination_filters_search_sort_and_raw_exclusion(
         "/api/v1/events/normalized",
         params={"search": _PG_TEST_SENSOR_PREFIX, "limit": 2, "offset": 4},
     ).json()
+    p_empty = client.get(
+        "/api/v1/events/normalized",
+        params={"search": _PG_TEST_SENSOR_PREFIX, "limit": 2, "offset": 5},
+    ).json()
+    p_max_offset = client.get(
+        "/api/v1/events/normalized",
+        params={"search": _PG_TEST_SENSOR_PREFIX, "limit": 2, "offset": MAX_QUERY_OFFSET},
+    )
     assert p1["has_more"] is True and p1["count"] == 2 and p1["total"] == 5
     assert p2["has_more"] is True and p2["count"] == 2 and p2["total"] == 5
     assert p3["has_more"] is False and p3["count"] == 1 and p3["total"] == 5
+    assert p_empty == {
+        "items": [],
+        "count": 0,
+        "total": 5,
+        "limit": 2,
+        "offset": 5,
+        "has_more": False,
+    }
+    assert p_max_offset.status_code == 200
     seen_ids = [i["ingestion_id"] for page in (p1, p2, p3) for i in page["items"]]
     assert len(set(seen_ids)) == 5
 
@@ -517,15 +566,9 @@ def test_live_postgres_query_pagination_filters_search_sort_and_raw_exclusion(
 
     r_type = client.get(
         "/api/v1/events/normalized",
-        params={"search": _PG_TEST_SENSOR_PREFIX, "event_type": "process.create"},
+        params={"search": _PG_TEST_SENSOR_PREFIX, "event_type": "PROCESS.CREATE"},
     ).json()
     assert r_type["total"] == 1 and r_type["items"][0]["user"] == "alice"
-
-    r_sev = client.get(
-        "/api/v1/events/normalized",
-        params={"search": _PG_TEST_SENSOR_PREFIX, "min_severity": 3, "max_severity": 5},
-    ).json()
-    assert r_sev["total"] == 2
 
     r_exact_sev = client.get(
         "/api/v1/events/normalized",
@@ -533,7 +576,7 @@ def test_live_postgres_query_pagination_filters_search_sort_and_raw_exclusion(
     ).json()
     assert r_exact_sev["total"] == 1 and r_exact_sev["items"][0]["host"] == "fw-edge-01"
 
-    # 4. Time-range filtering
+    # 4. Time-range filtering (excludes failed/unsupported NULL event_timestamp rows)
     r_time = client.get(
         "/api/v1/events/normalized",
         params={
@@ -553,26 +596,57 @@ def test_live_postgres_query_pagination_filters_search_sort_and_raw_exclusion(
             "source_type": "sysmon",
             "normalization_status": "normalized",
             "event_category": "process",
-            "min_severity": 3,
+            "severity": 3,
         },
     ).json()
     assert r_combo["total"] == 1
     assert r_combo["items"][0]["process"] == "powershell.exe"
 
-    # 6. Search LIKE wildcard escaping + secret raw_payload non-leakage
-    r_like = client.get(
-        "/api/v1/events/normalized",
-        params={"search": "100%_check"},
-    ).json()
-    assert r_like["total"] == 1 and r_like["items"][0]["user"] == "alice"
+    # 6. Search across all approved fields, wildcard/backslash escaping, & forbidden fields
+    suri_item = next(i for i in b_all["items"] if i["source_type"] == "suricata")
+    sysmon_item = next(i for i in b_all["items"] if i["normalization_status"] == "normalized" and i["source_type"] == "sysmon")
+    for search_term in (
+        suri_item["event_id"],
+        sysmon_item["ingestion_id"],
+        "10.0.0.15",           # source_ip
+        "198.51.100.42",       # destination_ip
+        "EVIL.EXAMPLE",        # case-insensitive domain
+        "ffffffff",            # file_hash
+        "network.dns",         # event_type
+        "FW-EDGE-01",          # case-insensitive host
+        "100%_check",          # escaped % and _
+        r"C:\Temp\run.bat",    # escaped backslash
+    ):
+        found = client.get("/api/v1/events/normalized", params={"search": search_term}).json()
+        assert found["total"] >= 1, f"Expected match for approved search term {search_term}"
 
-    r_raw_secret = client.get(
-        "/api/v1/events/normalized",
-        params={"search": "RAW_SECRET_TOKEN_01"},
-    ).json()
-    assert r_raw_secret["total"] == 0 and r_raw_secret["items"] == []
+    for forbidden_term in (
+        "RAW_SECRET_TOKEN_01",
+        "META_FORBIDDEN_MARKER",
+        "WARN_FORBIDDEN_MARKER",
+        "ERR_FORBIDDEN_MARKER",
+    ):
+        r_forbidden = client.get(
+            "/api/v1/events/normalized",
+            params={"search": forbidden_term},
+        ).json()
+        assert r_forbidden["total"] == 0 and r_forbidden["items"] == []
 
-    # 7. Sorting (severity desc puts 5, 3, 2 first and nulls last; asc puts 2, 3, 5 first)
+    # SQL injection payload as literal search does not bypass filters or corrupt schema
+    r_sqli = client.get(
+        "/api/v1/events/normalized",
+        params={"search": "' OR 1=1 --"},
+    )
+    assert r_sqli.status_code == 200 and r_sqli.json()["total"] == 0
+
+    # Removed min_severity parameter is ignored per FastAPI extra-query policy (does not error)
+    r_removed = client.get(
+        "/api/v1/events/normalized",
+        params={"search": _PG_TEST_SENSOR_PREFIX, "min_severity": 99},
+    )
+    assert r_removed.status_code == 200 and r_removed.json()["total"] == 5
+
+    # 7. Sorting across all 6 approved sort_by columns (NULLS LAST + id tie-breaker)
     r_sort_desc = client.get(
         "/api/v1/events/normalized",
         params={
@@ -581,8 +655,7 @@ def test_live_postgres_query_pagination_filters_search_sort_and_raw_exclusion(
             "sort_order": "desc",
         },
     ).json()
-    sevs_desc = [i["severity"] for i in r_sort_desc["items"]]
-    assert sevs_desc == [5, 3, 2, None, None]
+    assert [i["severity"] for i in r_sort_desc["items"]] == [5, 3, 2, None, None]
 
     r_sort_asc = client.get(
         "/api/v1/events/normalized",
@@ -596,9 +669,26 @@ def test_live_postgres_query_pagination_filters_search_sort_and_raw_exclusion(
     assert ts_asc[:3] == [
         "2026-11-25T10:00:00.000Z",
         "2026-11-25T11:00:00.000Z",
-        "2026-11-25T12:00:00.000Z",
+        "2026-11-25T11:00:00.000Z",
     ]
     assert ts_asc[3:] == [None, None]
+    # Duplicate timestamp tie-breaking ascending by id: sysmon (02) precedes zeek (03)
+    assert [i["sensor_id"] for i in r_sort_asc["items"][1:3]] == [
+        f"{_PG_TEST_SENSOR_PREFIX}02",
+        f"{_PG_TEST_SENSOR_PREFIX}03",
+    ]
+
+    for extra_sort in ("created_at", "source_type", "event_category", "normalization_status"):
+        for direction in ("asc", "desc"):
+            s_resp = client.get(
+                "/api/v1/events/normalized",
+                params={
+                    "search": _PG_TEST_SENSOR_PREFIX,
+                    "sort_by": extra_sort,
+                    "sort_order": direction,
+                },
+            )
+            assert s_resp.status_code == 200 and s_resp.json()["total"] == 5
 
     # 8. Empty result set
     r_empty = client.get(
