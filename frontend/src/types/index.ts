@@ -218,6 +218,8 @@ export interface NormalizedEventResponse {
   normalization_status: NormalizationStatus;
   normalization_errors: string[];
   normalization_warnings: string[];
+  enrichment_status?: string | null;
+  enrichment?: EventEnrichmentContext | null;
   created_at: string;
 }
 
@@ -257,6 +259,32 @@ export interface NormalizedEventListResult {
   has_more: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// Security Enrichment Context Contracts (Day 9)
+// Canonical enrichment structures attached to normalized events.
+// ---------------------------------------------------------------------------
+
+/** Extracted observable and its enrichment context. */
+export interface EventObservableEnrichment {
+  observable: string;
+  observable_type: string;
+  classification?: string | null;
+  provider?: string | null;
+  source_field?: string | null;
+  enriched_at?: string | null;
+  tags?: string[];
+}
+
+/** Enrichment summary & derived context attached to a normalized event. */
+export interface EventEnrichmentContext {
+  status?: string | null;
+  enriched_at?: string | null;
+  observables?: EventObservableEnrichment[];
+  warnings?: string[];
+  errors?: string[];
+  providers?: string[];
+}
+
 /**
  * Authoritative Normalized Security Event Model (v0.2.0).
  * Used across NormalizedEventView and tests (raw_event optional when omitted by safe API).
@@ -292,6 +320,8 @@ export interface NormalizedSecurityEvent {
   sensor_id?: string | null;
   warnings?: string[];
   errors?: string[];
+  enrichment_status?: string | null;
+  enrichment?: EventEnrichmentContext | null;
   created_at?: string;
 }
 

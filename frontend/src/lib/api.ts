@@ -1,7 +1,9 @@
 import type {
   BackendValidationErrorItem,
+  EventEnrichmentContext,
   EventIngestionRequest,
   EventIngestionResponse,
+  EventObservableEnrichment,
   HealthCheckResponse,
   IngestedEventRecord,
   NormalizedEventListResult,
@@ -357,11 +359,104 @@ export const fetchRecentEvents = async (
 };
 
 /**
+ * Safely extracts EventEnrichmentContext from either top-level `res.enrichment`
+ * or `res.metadata.enrichment` without inventing fields or verdicts.
+ */
+function normalizeEnrichmentContext(
+  rawEnrichment: unknown,
+  fallbackStatus?: string | null
+): EventEnrichmentContext | null {
+  if (!rawEnrichment || typeof rawEnrichment !== "object") {
+    if (typeof fallbackStatus === "string" && fallbackStatus.trim()) {
+      return { status: fallbackStatus };
+    }
+    return null;
+  }
+
+  const obj = rawEnrichment as Record<string, unknown>;
+  const observables: EventObservableEnrichment[] = Array.isArray(obj.observables)
+    ? obj.observables
+        .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
+        .map((item) => ({
+          observable:
+            typeof item.observable === "string"
+              ? item.observable
+              : typeof item.value === "string"
+                ? item.value
+                : "",
+          observable_type:
+            typeof item.observable_type === "string"
+              ? item.observable_type
+              : typeof item.type === "string"
+                ? item.type
+                : "unknown",
+          classification:
+            typeof item.classification === "string"
+              ? item.classification
+              : typeof item.context === "string"
+                ? item.context
+                : typeof item.verdict === "string"
+                  ? item.verdict
+                  : null,
+          provider:
+            typeof item.provider === "string"
+              ? item.provider
+              : typeof item.source === "string"
+                ? item.source
+                : null,
+          source_field:
+            typeof item.source_field === "string"
+              ? item.source_field
+              : typeof item.provenance === "string"
+                ? item.provenance
+                : null,
+          enriched_at:
+            typeof item.enriched_at === "string"
+              ? item.enriched_at
+              : typeof item.timestamp === "string"
+                ? item.timestamp
+                : null,
+          tags: Array.isArray(item.tags)
+            ? item.tags.filter((t): t is string => typeof t === "string")
+            : undefined,
+        }))
+        .filter((item) => item.observable.length > 0)
+    : [];
+
+  return {
+    status: typeof obj.status === "string" ? obj.status : (fallbackStatus ?? null),
+    enriched_at: typeof obj.enriched_at === "string" ? obj.enriched_at : null,
+    observables,
+    warnings: Array.isArray(obj.warnings)
+      ? obj.warnings.filter((w): w is string => typeof w === "string")
+      : [],
+    errors: Array.isArray(obj.errors)
+      ? obj.errors.filter((e): e is string => typeof e === "string")
+      : [],
+    providers: Array.isArray(obj.providers)
+      ? obj.providers.filter((p): p is string => typeof p === "string")
+      : undefined,
+  };
+}
+
+/**
  * Maps backend NormalizedEventResponse wire format to NormalizedSecurityEvent.
  */
 export function mapNormalizedEventResponse(
   res: NormalizedEventResponse
 ): NormalizedSecurityEvent {
+  const safeMetadata = res.metadata && typeof res.metadata === "object" ? res.metadata : {};
+  const rawEnrichment =
+    res.enrichment ?? (safeMetadata.enrichment as unknown) ?? null;
+  const enrichmentStatus =
+    typeof res.enrichment_status === "string"
+      ? res.enrichment_status
+      : rawEnrichment &&
+          typeof rawEnrichment === "object" &&
+          typeof (rawEnrichment as Record<string, unknown>).status === "string"
+        ? ((rawEnrichment as Record<string, unknown>).status as string)
+        : null;
+
   return {
     event_id: res.event_id ?? null,
     ingestion_id: res.ingestion_id,
@@ -383,10 +478,12 @@ export function mapNormalizedEventResponse(
     domain: res.domain ?? null,
     command_line: res.command_line ?? null,
     severity: res.severity ?? null,
-    metadata: res.metadata && typeof res.metadata === "object" ? res.metadata : {},
+    metadata: safeMetadata,
     normalization_status: res.normalization_status,
     warnings: Array.isArray(res.normalization_warnings) ? res.normalization_warnings : [],
     errors: Array.isArray(res.normalization_errors) ? res.normalization_errors : [],
+    enrichment_status: enrichmentStatus,
+    enrichment: normalizeEnrichmentContext(rawEnrichment, enrichmentStatus),
     created_at: res.created_at,
   };
 }

@@ -1,0 +1,143 @@
+"use client"
+
+import * as React from "react"
+import { AlertTriangle, Sparkles } from "lucide-react"
+import { Badge } from "@/components/ui/badge"
+import { EmptyState } from "@/components/ui/empty-state"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { EnrichmentStatusBadge } from "./enrichment-status-badge"
+import type { EventEnrichmentContext } from "@/types"
+
+interface EnrichmentContextPanelProps {
+  enrichment?: EventEnrichmentContext | null
+  enrichmentStatus?: string | null
+}
+
+export function EnrichmentContextPanel({
+  enrichment,
+  enrichmentStatus,
+}: EnrichmentContextPanelProps) {
+  const effectiveStatus = enrichment?.status ?? enrichmentStatus ?? null
+  const observables = enrichment?.observables ?? []
+  const warnings = enrichment?.warnings ?? []
+  const errors = enrichment?.errors ?? []
+  const hasAnyEnrichment = Boolean(enrichment || effectiveStatus)
+
+  return (
+    <section
+      aria-label="Security enrichment context"
+      className="space-y-3 rounded-md border bg-muted/20 p-4"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b pb-2">
+        <div className="space-y-0.5">
+          <h3 className="flex items-center gap-2 text-sm font-semibold">
+            <Sparkles className="h-4 w-4 text-primary" aria-hidden="true" />
+            Enrichment-Derived Context
+          </h3>
+          <p className="text-xs text-muted-foreground">
+            Derived observable context is kept separate from original normalized event fields.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          {enrichment?.enriched_at && (
+            <span className="font-mono text-xs text-muted-foreground">
+              Enriched: {enrichment.enriched_at}
+            </span>
+          )}
+          <EnrichmentStatusBadge status={effectiveStatus} />
+        </div>
+      </div>
+
+      {!hasAnyEnrichment && (
+        <EmptyState
+          title="No enrichment available"
+          description="No enrichment context has been attached to this normalized event."
+          className="h-[160px]"
+        />
+      )}
+
+      {hasAnyEnrichment && warnings.length > 0 && (
+        <div
+          role="status"
+          aria-label="Enrichment warnings"
+          className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-300"
+        >
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+          <div className="space-y-1">
+            <p className="font-medium">Partial enrichment warnings</p>
+            <ul className="ml-4 list-disc space-y-0.5">
+              {warnings.map((w, idx) => (
+                <li key={`enrich-warn-${idx}`}>{w}</li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
+
+      {hasAnyEnrichment && errors.length > 0 && (
+        <div
+          role="alert"
+          aria-label="Enrichment errors"
+          className="space-y-1 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive"
+        >
+          <p className="font-medium">Enrichment errors reported</p>
+          <ul className="ml-4 list-disc space-y-0.5">
+            {errors.map((errMsg, idx) => (
+              <li key={`enrich-err-${idx}`}>{errMsg}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {hasAnyEnrichment && observables.length === 0 && errors.length === 0 && (
+        <EmptyState
+          title="No observables extracted"
+          description="No enrichable observables were returned for this event."
+          className="h-[150px]"
+        />
+      )}
+
+      {observables.length > 0 && (
+        <Table aria-label="Enriched observables">
+          <TableHeader>
+            <TableRow>
+              <TableHead>Observable</TableHead>
+              <TableHead>Type</TableHead>
+              <TableHead>Classification / Context</TableHead>
+              <TableHead>Source / Provider</TableHead>
+              <TableHead>Provenance</TableHead>
+              <TableHead>Enriched At</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {observables.map((obs, idx) => (
+              <TableRow key={`${obs.observable}-${obs.observable_type}-${idx}`}>
+                <TableCell className="font-mono text-xs break-all">{obs.observable}</TableCell>
+                <TableCell className="font-mono text-xs">{obs.observable_type || "—"}</TableCell>
+                <TableCell className="text-xs">
+                  {obs.classification ? (
+                    <Badge variant="outline">{obs.classification}</Badge>
+                  ) : (
+                    <span className="text-muted-foreground">No verdict</span>
+                  )}
+                </TableCell>
+                <TableCell className="text-xs">{obs.provider || "—"}</TableCell>
+                <TableCell
+                  className="font-mono text-xs"
+                  title={
+                    obs.source_field
+                      ? `Extracted from normalized field: ${obs.source_field}`
+                      : undefined
+                  }
+                >
+                  {obs.source_field || "—"}
+                </TableCell>
+                <TableCell className="font-mono text-xs">{obs.enriched_at || "—"}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      )}
+    </section>
+  )
+}

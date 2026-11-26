@@ -10,6 +10,7 @@ import { LoadingState } from "@/components/ui/loading-state"
 import { ErrorState } from "@/components/ui/error-state"
 import { EmptyState } from "@/components/ui/empty-state"
 import { NormalizationStatusBadge } from "./normalization-status-badge"
+import { EnrichmentStatusBadge } from "./enrichment-status-badge"
 import {
   ApiError,
   DEFAULT_RECENT_EVENTS_LIMIT,
@@ -555,6 +556,7 @@ export function NormalizedEventExplorer({
                 <TableHead>Host</TableHead>
                 <TableHead>Severity</TableHead>
                 <TableHead>Normalization</TableHead>
+                <TableHead>Enrichment</TableHead>
                 {onSelectNormalizedEvent && <TableHead className="text-right">Details</TableHead>}
               </TableRow>
             </TableHeader>
@@ -583,6 +585,15 @@ export function NormalizedEventExplorer({
                     </TableCell>
                     <TableCell>
                       <NormalizationStatusBadge status={evt.normalization_status} />
+                    </TableCell>
+                    <TableCell>
+                      {(evt.enrichment_status ?? evt.enrichment?.status) ? (
+                        <EnrichmentStatusBadge
+                          status={evt.enrichment_status ?? evt.enrichment?.status}
+                        />
+                      ) : (
+                        <span className="text-xs text-muted-foreground">—</span>
+                      )}
                     </TableCell>
                     {onSelectNormalizedEvent && (
                       <TableCell className="text-right">
