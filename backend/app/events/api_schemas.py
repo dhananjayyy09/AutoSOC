@@ -13,6 +13,12 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.events.enrichment_contract import (
+    EnrichmentProvenance,
+    EnrichmentStatusEnum,
+    MAX_PROVIDER_NAME_LENGTH,
+    NormalizedEventEnrichmentPayload,
+)
 from app.events.query_contract import (
     DEFAULT_QUERY_LIMIT,
     DEFAULT_QUERY_OFFSET,
@@ -108,6 +114,10 @@ class EventIngestionResponse(BaseModel):
         default=None,
         description="Normalization outcome (normalized, normalized_with_warnings, failed, unsupported)",
     )
+    enrichment_status: Optional[str] = Field(
+        default=None,
+        description="Enrichment outcome (enriched, partial, skipped, failed) when normalization produced an event",
+    )
     possible_duplicate: bool = Field(
         description="True if an identical raw_hash was previously ingested"
     )
@@ -187,6 +197,59 @@ class NormalizedEventListResponse(BaseModel):
     has_more: bool = Field(
         default=False, description="True if additional matching events exist beyond offset + count"
     )
+
+
+class EventEnrichmentQueryParams(BaseModel):
+    """Validated query parameters for listing persisted event enrichments."""
+
+    limit: int = Field(default=DEFAULT_QUERY_LIMIT, ge=1, le=MAX_QUERY_LIMIT)
+    offset: int = Field(default=DEFAULT_QUERY_OFFSET, ge=0, le=MAX_QUERY_OFFSET)
+    enrichment_status: Optional[EnrichmentStatusEnum] = None
+    provider: Optional[str] = Field(default=None, max_length=MAX_PROVIDER_NAME_LENGTH)
+    sort_order: SortOrderEnum = SortOrderEnum.DESC
+
+    @field_validator("provider")
+    @classmethod
+    def validate_provider(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            return None
+        if not re.match(r"^[a-zA-Z0-9_.-]{1,64}$", stripped):
+            raise ValueError(
+                "provider must contain only alphanumeric, '.', '_', or '-' characters"
+            )
+        return stripped
+
+
+class EventEnrichmentResponse(BaseModel):
+    """Safe API representation of separate event enrichment context (omits raw payloads)."""
+
+    enrichment_id: str
+    event_id: str
+    ingestion_id: str
+    provider: str
+    enrichment_status: EnrichmentStatusEnum
+    enrichment_data: Optional[NormalizedEventEnrichmentPayload] = None
+    provenance: EnrichmentProvenance
+    warnings: List[str] = Field(default_factory=list)
+    errors: List[str] = Field(default_factory=list)
+    attempt_count: int = Field(ge=1)
+    enriched_at: Optional[str] = None
+    created_at: str
+    updated_at: str
+
+
+class EventEnrichmentListResponse(BaseModel):
+    """Bounded, paginated list of event enrichment records."""
+
+    items: List[EventEnrichmentResponse]
+    count: int
+    total: int = Field(default=0, ge=0)
+    limit: int
+    offset: int = Field(default=0, ge=0)
+    has_more: bool = Field(default=False)
 
 
 def build_payload_preview(raw_payload: str, max_chars: int = PREVIEW_MAX_CHARS) -> str:
