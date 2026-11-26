@@ -8,12 +8,17 @@ payloads (raw_hash) without silently discarding events.
 """
 
 import logging
-from typing import List, Optional
+from typing import Any, List, Optional, Tuple
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.events.api_schemas import (
+    EventSortFieldEnum,
+    NormalizedEventQueryParams,
+    SortOrderEnum,
+)
 from app.events.models import NormalizedEvent, RawEventEnvelope
 from app.events.schemas import IngestionEnvelope
 
@@ -228,6 +233,108 @@ async def persist_normalized_event(
         raise EventPersistenceError("Normalized event persistence failure") from exc
 
 
+_SEARCHABLE_NORMALIZED_COLUMNS = (
+    NormalizedEvent.event_id,
+    NormalizedEvent.ingestion_id,
+    NormalizedEvent.sensor_id,
+    NormalizedEvent.event_type,
+    NormalizedEvent.host,
+    NormalizedEvent.user_name,
+    NormalizedEvent.source_ip,
+    NormalizedEvent.destination_ip,
+    NormalizedEvent.process,
+    NormalizedEvent.domain,
+    NormalizedEvent.file_hash,
+    NormalizedEvent.command_line,
+)
+
+_SORT_COLUMN_MAP = {
+    EventSortFieldEnum.CREATED_AT: NormalizedEvent.created_at,
+    EventSortFieldEnum.TIMESTAMP: NormalizedEvent.event_timestamp,
+    EventSortFieldEnum.SEVERITY: NormalizedEvent.severity,
+    EventSortFieldEnum.SOURCE_TYPE: NormalizedEvent.source_type,
+    EventSortFieldEnum.NORMALIZATION_STATUS: NormalizedEvent.normalization_status,
+    EventSortFieldEnum.EVENT_CATEGORY: NormalizedEvent.event_category,
+    EventSortFieldEnum.EVENT_TYPE: NormalizedEvent.event_type,
+}
+
+
+def _escape_like(value: str) -> str:
+    """Escape SQL LIKE/ILIKE wildcards so search matches literal substrings."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _build_normalized_event_filters(params: NormalizedEventQueryParams) -> List[Any]:
+    filters: List[Any] = []
+    if params.source_type is not None:
+        filters.append(NormalizedEvent.source_type == params.source_type.value)
+    if params.normalization_status is not None:
+        filters.append(
+            NormalizedEvent.normalization_status == params.normalization_status.value
+        )
+    if params.event_category is not None:
+        filters.append(NormalizedEvent.event_category == params.event_category.value)
+    if params.event_type is not None:
+        filters.append(NormalizedEvent.event_type == params.event_type)
+    if params.severity is not None:
+        filters.append(NormalizedEvent.severity == params.severity)
+    if params.min_severity is not None:
+        filters.append(NormalizedEvent.severity >= params.min_severity)
+    if params.max_severity is not None:
+        filters.append(NormalizedEvent.severity <= params.max_severity)
+    if params.start_time is not None:
+        filters.append(NormalizedEvent.event_timestamp >= params.start_time)
+    if params.end_time is not None:
+        filters.append(NormalizedEvent.event_timestamp <= params.end_time)
+    if params.search is not None:
+        pattern = f"%{_escape_like(params.search)}%"
+        filters.append(
+            or_(*(col.ilike(pattern, escape="\\") for col in _SEARCHABLE_NORMALIZED_COLUMNS))
+        )
+    return filters
+
+
+def _resolve_sort_clauses(
+    sort_by: EventSortFieldEnum, sort_order: SortOrderEnum
+) -> Tuple[Any, ...]:
+    primary_col = _SORT_COLUMN_MAP[sort_by]
+    if sort_order == SortOrderEnum.ASC:
+        return (primary_col.asc().nulls_last(), NormalizedEvent.id.asc())
+    return (primary_col.desc().nulls_last(), NormalizedEvent.id.desc())
+
+
+async def query_normalized_events(
+    session: AsyncSession, params: NormalizedEventQueryParams
+) -> Tuple[List[NormalizedEvent], int]:
+    """
+    Query normalized events at the database level with filtering, search,
+    deterministic sorting, and offset pagination. Returns `(items, total)`.
+    """
+    filters = _build_normalized_event_filters(params)
+    order_clauses = _resolve_sort_clauses(params.sort_by, params.sort_order)
+
+    try:
+        count_stmt = select(func.count(NormalizedEvent.id))
+        data_stmt = select(NormalizedEvent)
+        if filters:
+            count_stmt = count_stmt.where(*filters)
+            data_stmt = data_stmt.where(*filters)
+
+        total_raw = await session.scalar(count_stmt)
+        data_stmt = (
+            data_stmt.order_by(*order_clauses)
+            .limit(params.limit)
+            .offset(params.offset)
+        )
+        result = await session.scalars(data_stmt)
+        items = list(result.all())
+        total = int(total_raw) if total_raw is not None else len(items)
+        return items, total
+    except SQLAlchemyError as exc:
+        logger.error("Database failure querying normalized events: %s", exc, exc_info=True)
+        raise EventPersistenceError("Database retrieval failure") from exc
+
+
 async def list_recent_normalized_events(
     session: AsyncSession, limit: int = 20
 ) -> List[NormalizedEvent]:
@@ -235,14 +342,7 @@ async def list_recent_normalized_events(
     Retrieve recently processed normalized events using deterministic descending order
     (`created_at DESC, id DESC`).
     """
-    try:
-        stmt = (
-            select(NormalizedEvent)
-            .order_by(NormalizedEvent.created_at.desc(), NormalizedEvent.id.desc())
-            .limit(limit)
-        )
-        result = await session.scalars(stmt)
-        return list(result.all())
-    except SQLAlchemyError as exc:
-        logger.error("Database failure retrieving normalized events: %s", exc, exc_info=True)
-        raise EventPersistenceError("Database retrieval failure") from exc
+    items, _ = await query_normalized_events(
+        session, NormalizedEventQueryParams(limit=limit)
+    )
+    return items
