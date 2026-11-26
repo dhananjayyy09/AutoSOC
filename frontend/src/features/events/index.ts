@@ -4,6 +4,8 @@
 export { EventIngestionForm } from "./event-ingestion-form";
 export { RecentEventsList } from "./recent-events-list";
 export { NormalizationStatusBadge } from "./normalization-status-badge";
+export { EnrichmentStatusBadge } from "./enrichment-status-badge";
+export { EnrichmentContextPanel } from "./enrichment-context-panel";
 export { NormalizedEventView } from "./normalized-event-view";
 export { NormalizedEventExplorer, getNormalizedEventKey } from "./normalized-event-explorer";
 export {
@@ -37,6 +39,8 @@ export type {
   EventProtocol,
   NormalizationStatus,
   NormalizedSecurityEvent,
+  EventObservableEnrichment,
+  EventEnrichmentContext,
 } from "@/types";
 
 export const EVENTS_CONFIG = {

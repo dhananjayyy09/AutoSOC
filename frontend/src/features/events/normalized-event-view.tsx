@@ -9,6 +9,7 @@ import { LoadingState } from "@/components/ui/loading-state"
 import { ErrorState } from "@/components/ui/error-state"
 import { EmptyState } from "@/components/ui/empty-state"
 import { NormalizationStatusBadge } from "./normalization-status-badge"
+import { EnrichmentContextPanel } from "./enrichment-context-panel"
 import type { IngestedEventRecord, NormalizedSecurityEvent, SeverityLevel } from "@/types"
 
 interface NormalizedEventViewProps {
@@ -113,8 +114,9 @@ export function NormalizedEventView({
           Raw ingestion evidence is kept separate from normalized schema fields.
         </CardDescription>
       </CardHeader>
-      <CardContent className="grid gap-6 lg:grid-cols-2">
-        {/* Raw Ingestion Evidence */}
+      <CardContent className="space-y-6">
+        <div className="grid gap-6 lg:grid-cols-2">
+          {/* Raw Ingestion Evidence */}
         <section aria-label="Raw ingestion envelope" className="space-y-3 rounded-md border bg-muted/20 p-4">
           <div className="flex items-center justify-between gap-2 border-b pb-2">
             <h3 className="flex items-center gap-2 text-sm font-semibold">
@@ -235,6 +237,14 @@ export function NormalizedEventView({
             </dl>
           )}
         </section>
+        </div>
+
+        {!isLoading && !error && normalizedEvent && (
+          <EnrichmentContextPanel
+            enrichment={normalizedEvent.enrichment}
+            enrichmentStatus={normalizedEvent.enrichment_status}
+          />
+        )}
       </CardContent>
     </Card>
   )

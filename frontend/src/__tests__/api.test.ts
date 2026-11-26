@@ -572,4 +572,48 @@ describe('fetchNormalizedEvents & fetchNormalizedEventById', () => {
     expect(res.event_id).toBe('evt-norm-202')
     expect(res.source).toBe('zeek')
   })
+
+  it('maps enrichment context and omits raw_event when provided in NormalizedEventResponse', async () => {
+    const backendItem = {
+      event_id: 'evt-enr-map',
+      ingestion_id: 'ing-enr-map',
+      raw_envelope_id: 2,
+      timestamp: '2026-11-26T12:00:00Z',
+      source_type: 'suricata',
+      sensor_id: 'sensor-02',
+      event_category: 'network',
+      event_type: 'network.connection',
+      host: 'edge-01',
+      severity: 3,
+      metadata: {},
+      normalization_status: 'normalized',
+      normalization_errors: [],
+      normalization_warnings: [],
+      enrichment_status: 'partial',
+      enrichment: {
+        status: 'partial',
+        enriched_at: '2026-11-26T12:00:05Z',
+        observables: [
+          {
+            observable: '203.0.113.10',
+            observable_type: 'ip',
+            classification: 'external',
+            provider: 'geoip',
+            source_field: 'destination_ip',
+          },
+        ],
+        warnings: ['Provider B unavailable'],
+        errors: [],
+      },
+      created_at: '2026-11-26T12:00:01Z',
+    }
+    ;(global.fetch as jest.Mock).mockResolvedValueOnce({ ok: true, json: async () => backendItem })
+
+    const res = await fetchNormalizedEventById('evt-enr-map')
+    expect(res.enrichment_status).toBe('partial')
+    expect(res.enrichment?.observables).toHaveLength(1)
+    expect(res.enrichment?.observables?.[0].observable).toBe('203.0.113.10')
+    expect(res.enrichment?.warnings).toEqual(['Provider B unavailable'])
+    expect(res.raw_event).toBeUndefined()
+  })
 })
