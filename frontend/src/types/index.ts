@@ -215,6 +215,30 @@ export interface NormalizedEventsEnvelope {
   items: NormalizedEventResponse[];
   count: number;
   limit: number;
+  total?: number;
+  offset?: number;
+}
+
+/** Query parameters for the Normalized Event Explorer (Day 8). */
+export interface NormalizedEventsQueryParams {
+  limit?: number;
+  offset?: number;
+  search?: string;
+  source_type?: SecurityEventSource | string;
+  normalization_status?: NormalizationStatus | string;
+  event_category?: EventCategory | string;
+  severity?: number;
+  sort_by?: "created_at" | "timestamp" | "severity";
+  sort_order?: "asc" | "desc";
+}
+
+/** Normalized result returned by queryNormalizedEvents(). */
+export interface NormalizedEventListResult {
+  items: NormalizedSecurityEvent[];
+  count: number;
+  limit: number;
+  total?: number;
+  offset?: number;
 }
 
 /**
