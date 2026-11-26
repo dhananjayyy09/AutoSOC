@@ -20,6 +20,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.events.api_schemas import (
+    EventEnrichmentListResponse,
+    EventEnrichmentQueryParams,
+    EventEnrichmentResponse,
     EventIngestionResponse,
     IngestedEventListResponse,
     IngestedEventSummary,
@@ -27,7 +30,15 @@ from app.events.api_schemas import (
     NormalizedEventResponse,
     build_payload_preview,
 )
-from app.events.models import NormalizedEvent
+from app.events.enrichment_contract import (
+    ENRICHMENT_PIPELINE_VERSION,
+    EnrichmentProvenance,
+    EnrichmentStatusEnum,
+    MAX_PROVIDER_NAME_LENGTH,
+    NormalizedEventEnrichmentPayload,
+)
+from app.events.enrichment_service import EnrichmentService
+from app.events.models import EventEnrichment, NormalizedEvent
 from app.events.normalization_service import NormalizationService
 from app.events.query_contract import (
     DEFAULT_QUERY_LIMIT,
@@ -41,9 +52,12 @@ from app.events.query_contract import (
     SortOrderEnum,
 )
 from app.events.repository import (
+    get_event_enrichment_by_event_id,
+    get_event_enrichments_by_event_ids,
     get_normalized_event_by_event_id,
     list_recent_envelopes,
     persist_raw_envelope,
+    query_event_enrichments,
     query_normalized_events,
 )
 from app.events.schemas import (
@@ -62,6 +76,7 @@ logger = logging.getLogger("autosoc")
 
 router = APIRouter()
 _default_normalization_service = NormalizationService()
+_default_enrichment_service = EnrichmentService()
 
 
 def _format_utc_iso(dt: datetime) -> str:
@@ -70,7 +85,66 @@ def _format_utc_iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _to_normalized_response(rec: NormalizedEvent) -> NormalizedEventResponse:
+def _to_enrichment_response(rec: EventEnrichment) -> EventEnrichmentResponse:
+    raw_prov = rec.provenance or {}
+    provider_version = str(raw_prov.get("provider_version") or "1.0.0")
+    live_lookup = bool(raw_prov.get("live_lookup_performed", False))
+    provenance = EnrichmentProvenance(
+        pipeline_version=str(raw_prov.get("pipeline_version") or ENRICHMENT_PIPELINE_VERSION),
+        provider=str(raw_prov.get("provider") or rec.provider),
+        provider_version=provider_version,
+        live_lookup_performed=live_lookup,
+        enriched_fields=list(raw_prov.get("enriched_fields") or []),
+        source_event_id=str(raw_prov.get("source_event_id") or rec.event_id),
+        source_ingestion_id=str(raw_prov.get("source_ingestion_id") or rec.ingestion_id),
+    )
+    enrichment_payload = (
+        NormalizedEventEnrichmentPayload(**rec.enrichment_data)
+        if rec.enrichment_data
+        else None
+    )
+    observables = enrichment_payload.observables if enrichment_payload else []
+    observable_count = (
+        enrichment_payload.observable_count if enrichment_payload else 0
+    )
+    context = enrichment_payload.context if enrichment_payload else None
+    return EventEnrichmentResponse(
+        enrichment_id=rec.enrichment_id,
+        event_id=rec.event_id,
+        ingestion_id=rec.ingestion_id,
+        provider=rec.provider,
+        provider_version=provider_version,
+        enrichment_status=EnrichmentStatusEnum(rec.enrichment_status),
+        live_lookup_performed=live_lookup,
+        observable_count=observable_count,
+        observables=observables,
+        context=context,
+        enrichment_data=enrichment_payload,
+        provenance=provenance,
+        warnings=list(rec.enrichment_warnings or []),
+        errors=list(rec.enrichment_errors or []),
+        attempt_count=int(rec.attempt_count or 1),
+        enriched_at=_format_utc_iso(rec.enriched_at) if rec.enriched_at is not None else None,
+        created_at=_format_utc_iso(rec.created_at),
+        updated_at=_format_utc_iso(rec.updated_at),
+    )
+
+
+def _to_normalized_response(
+    rec: NormalizedEvent, enrichment_rec: Optional[EventEnrichment] = None
+) -> NormalizedEventResponse:
+    enrichment_dto = (
+        _to_enrichment_response(enrichment_rec)
+        if enrichment_rec is not None
+        else None
+    )
+    if enrichment_dto is not None:
+        enrichment_status: Optional[str] = enrichment_dto.enrichment_status.value
+    elif rec.event_id is None:
+        enrichment_status = EnrichmentStatusEnum.SKIPPED.value
+    else:
+        enrichment_status = None
+
     return NormalizedEventResponse(
         event_id=rec.event_id,
         ingestion_id=rec.ingestion_id,
@@ -96,6 +170,8 @@ def _to_normalized_response(rec: NormalizedEvent) -> NormalizedEventResponse:
         normalization_status=rec.normalization_status,
         normalization_errors=list(rec.normalization_errors or []),
         normalization_warnings=list(rec.normalization_warnings or []),
+        enrichment_status=enrichment_status,
+        enrichment=enrichment_dto,
         created_at=_format_utc_iso(rec.created_at),
     )
 
@@ -170,6 +246,8 @@ async def ingest_event_envelope(
     # Normalization failure never rolls back or removes the accepted RawEventEnvelope.
     event_id = None
     norm_status = "failed"
+    enrichment_status: Optional[str] = None
+    norm_record: Optional[NormalizedEvent] = None
     try:
         norm_record = await _default_normalization_service.normalize_and_persist(
             db, record
@@ -183,12 +261,28 @@ async def ingest_event_envelope(
             type(exc).__name__,
         )
 
+    if event_id is not None and norm_record is not None:
+        try:
+            enrich_record = await _default_enrichment_service.enrich_normalized_event(
+                db, norm_record
+            )
+            if enrich_record is not None:
+                enrichment_status = enrich_record.enrichment_status
+        except Exception as exc:
+            enrichment_status = EnrichmentStatusEnum.FAILED.value
+            logger.error(
+                "Post-ingest enrichment failed for ingestion_id=%s: %s",
+                record.ingestion_id,
+                type(exc).__name__,
+            )
+
     return EventIngestionResponse(
         ingestion_id=record.ingestion_id,
         event_id=event_id,
         source_type=SourceTypeEnum(record.source_type),
         status=record.processing_status,
         normalization_status=norm_status,
+        enrichment_status=enrichment_status,
         possible_duplicate=record.possible_duplicate,
         received_at=_format_utc_iso(record.received_at),
         warnings=[w.message for w in validation_result.warnings],
@@ -333,8 +427,91 @@ async def get_recent_normalized_events(
         )
 
     records, total = await query_normalized_events(db, query_params)
-    items = [_to_normalized_response(rec) for rec in records]
+    event_ids = [rec.event_id for rec in records if rec.event_id]
+    enrichment_map = await get_event_enrichments_by_event_ids(db, event_ids)
+    items = [
+        _to_normalized_response(
+            rec, enrichment_map.get(rec.event_id) if rec.event_id else None
+        )
+        for rec in records
+    ]
     return NormalizedEventListResponse(
+        items=items,
+        count=len(items),
+        total=total,
+        limit=query_params.limit,
+        offset=query_params.offset,
+        has_more=(query_params.offset + len(items)) < total,
+    )
+
+
+@router.get(
+    "/enrichments",
+    status_code=status.HTTP_200_OK,
+    response_model=EventEnrichmentListResponse,
+    summary="Query and Paginate Normalized Event Enrichments",
+)
+async def list_event_enrichments(
+    limit: int = Query(
+        default=DEFAULT_QUERY_LIMIT,
+        ge=1,
+        le=MAX_QUERY_LIMIT,
+        description="Maximum number of enrichment records to return per page (1-100)",
+    ),
+    offset: int = Query(
+        default=DEFAULT_QUERY_OFFSET,
+        ge=0,
+        le=MAX_QUERY_OFFSET,
+        description="Number of matching enrichment records to skip (0-10000)",
+    ),
+    enrichment_status: Optional[EnrichmentStatusEnum] = Query(
+        default=None,
+        description="Filter by enrichment_status",
+    ),
+    provider: Optional[str] = Query(
+        default=None,
+        max_length=MAX_PROVIDER_NAME_LENGTH,
+        description="Filter by enrichment provider name",
+    ),
+    sort_order: SortOrderEnum = Query(
+        default=SortOrderEnum.DESC,
+        description="Sort direction by created_at (asc or desc)",
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> Any:
+    """List persisted security event enrichments with bounded offset pagination."""
+    try:
+        query_params = EventEnrichmentQueryParams(
+            limit=limit,
+            offset=offset,
+            enrichment_status=enrichment_status,
+            provider=provider,
+            sort_order=sort_order,
+        )
+    except ValidationError as exc:
+        errors = [
+            {
+                "field": " -> ".join(["query", *(str(loc) for loc in err.get("loc", []))]),
+                "message": err.get("msg", ""),
+                "type": err.get("type", ""),
+            }
+            for err in exc.errors()
+        ]
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={"message": "Validation error", "errors": errors},
+        )
+
+    records, total = await query_event_enrichments(
+        db,
+        limit=query_params.limit,
+        offset=query_params.offset,
+        enrichment_status=query_params.enrichment_status,
+        provider=query_params.provider,
+        sort_order=query_params.sort_order,
+    )
+    items = [_to_enrichment_response(rec) for rec in records]
+    return EventEnrichmentListResponse(
         items=items,
         count=len(items),
         total=total,
@@ -358,4 +535,57 @@ async def get_normalized_event(
     record = await get_normalized_event_by_event_id(db, event_id)
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
-    return _to_normalized_response(record)
+    enrichment_rec = await get_event_enrichment_by_event_id(db, event_id)
+    return _to_normalized_response(record, enrichment_rec)
+
+
+@router.get(
+    "/normalized/{event_id}/enrichment",
+    status_code=status.HTTP_200_OK,
+    response_model=EventEnrichmentResponse,
+    summary="Get Enrichment Context for a Normalized Event",
+)
+async def get_normalized_event_enrichment(
+    event_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> EventEnrichmentResponse:
+    """Retrieve the enrichment record associated with a normalized event_id."""
+    record = await get_event_enrichment_by_event_id(db, event_id)
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    return _to_enrichment_response(record)
+
+
+@router.post(
+    "/normalized/{event_id}/enrich",
+    status_code=status.HTTP_200_OK,
+    response_model=EventEnrichmentResponse,
+    summary="Enrich or Retry Enrichment for a Normalized Event",
+)
+async def trigger_normalized_event_enrichment(
+    event_id: str,
+    force_retry: bool = Query(
+        default=False,
+        description="Retry enrichment even if already completed or failed",
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> EventEnrichmentResponse:
+    """
+    Deterministically enrich a persisted NormalizedEvent by event_id, or retry
+    a failed enrichment in place without creating duplicate enrichment records.
+    """
+    norm_record = await get_normalized_event_by_event_id(db, event_id)
+    if norm_record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+    existing = await get_event_enrichment_by_event_id(db, event_id)
+    should_retry = force_retry or (
+        existing is not None
+        and existing.enrichment_status == EnrichmentStatusEnum.FAILED.value
+    )
+    record = await _default_enrichment_service.enrich_normalized_event(
+        db, norm_record, retry=should_retry
+    )
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    return _to_enrichment_response(record)

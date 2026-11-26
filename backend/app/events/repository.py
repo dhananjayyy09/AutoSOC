@@ -7,14 +7,16 @@ enforces delivery-attempt uniqueness (ingestion_id), and flags duplicate raw
 payloads (raw_hash) without silently discarding events.
 """
 
+import inspect
 import logging
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.events.models import NormalizedEvent, RawEventEnvelope
+from app.events.enrichment_contract import EnrichmentStatusEnum
+from app.events.models import EventEnrichment, NormalizedEvent, RawEventEnvelope
 from app.events.query_contract import (
     NormalizedEventQueryParams,
     NormalizedEventSortField,
@@ -325,3 +327,135 @@ async def list_recent_normalized_events(
         session, NormalizedEventQueryParams(limit=limit)
     )
     return items
+
+
+async def get_event_enrichment_by_event_id(
+    session: AsyncSession, event_id: str
+) -> Optional[EventEnrichment]:
+    """Retrieve an EventEnrichment record by its linked normalized event_id."""
+    try:
+        return await session.scalar(
+            select(EventEnrichment)
+            .where(EventEnrichment.event_id == event_id)
+            .limit(1)
+        )
+    except SQLAlchemyError as exc:
+        logger.error(
+            "Database failure retrieving enrichment for event_id=%s: %s",
+            event_id,
+            exc,
+            exc_info=True,
+        )
+        raise EventPersistenceError("Database retrieval failure") from exc
+
+
+async def get_event_enrichments_by_event_ids(
+    session: AsyncSession, event_ids: List[str]
+) -> Dict[str, EventEnrichment]:
+    """
+    Batch-retrieve EventEnrichment records keyed by normalized event_id in one
+    database query (eliminates N+1 lookups during paginated normalized queries).
+    """
+    clean_ids = list(dict.fromkeys(eid for eid in event_ids if isinstance(eid, str) and eid))
+    if not clean_ids:
+        return {}
+    try:
+        result = await session.scalars(
+            select(EventEnrichment).where(EventEnrichment.event_id.in_(clean_ids))
+        )
+        rows = result.all() if result is not None else []
+        if inspect.iscoroutine(rows):
+            rows.close()
+            return {}
+        if not isinstance(rows, (list, tuple)):
+            return {}
+        out: Dict[str, EventEnrichment] = {}
+        for row in rows:
+            if isinstance(row, EventEnrichment) and row.event_id:
+                out[row.event_id] = row
+        return out
+    except SQLAlchemyError as exc:
+        logger.error(
+            "Database failure batch-retrieving enrichments for %d events: %s",
+            len(clean_ids),
+            exc,
+            exc_info=True,
+        )
+        raise EventPersistenceError("Database retrieval failure") from exc
+
+
+async def persist_or_update_event_enrichment(
+    session: AsyncSession, record: EventEnrichment
+) -> EventEnrichment:
+    """
+    Insert or update an EventEnrichment record without modifying normalized_events
+    or raw_event_envelopes. Rolls back on SQLAlchemy error.
+    """
+    try:
+        session.add(record)
+        await session.commit()
+        await session.refresh(record)
+        logger.info(
+            "Persisted event enrichment enrichment_id=%s event_id=%s status=%s attempt=%s",
+            record.enrichment_id,
+            record.event_id,
+            record.enrichment_status,
+            record.attempt_count,
+        )
+        return record
+    except SQLAlchemyError as exc:
+        await session.rollback()
+        logger.error(
+            "Database failure persisting event enrichment for event_id=%s: %s",
+            record.event_id,
+            exc,
+            exc_info=True,
+        )
+        raise EventPersistenceError("Event enrichment persistence failure") from exc
+
+
+async def query_event_enrichments(
+    session: AsyncSession,
+    *,
+    limit: int = 20,
+    offset: int = 0,
+    enrichment_status: Optional[EnrichmentStatusEnum] = None,
+    provider: Optional[str] = None,
+    sort_order: SortOrderEnum = SortOrderEnum.DESC,
+) -> Tuple[List[EventEnrichment], int]:
+    """
+    Query persisted enrichment records at the database level with deterministic
+    ordering (`created_at`, `id` tie-breaker) and offset pagination.
+    """
+    filters: List[Any] = []
+    if enrichment_status is not None:
+        filters.append(EventEnrichment.enrichment_status == enrichment_status.value)
+    if provider is not None:
+        filters.append(EventEnrichment.provider == provider)
+
+    order_clauses = (
+        (EventEnrichment.created_at.asc(), EventEnrichment.id.asc())
+        if sort_order == SortOrderEnum.ASC
+        else (EventEnrichment.created_at.desc(), EventEnrichment.id.desc())
+    )
+
+    try:
+        count_stmt = select(func.count(EventEnrichment.id))
+        data_stmt = select(EventEnrichment)
+        if filters:
+            count_stmt = count_stmt.where(*filters)
+            data_stmt = data_stmt.where(*filters)
+
+        total_raw = await session.scalar(count_stmt)
+        data_stmt = data_stmt.order_by(*order_clauses).limit(limit).offset(offset)
+        result = await session.scalars(data_stmt)
+        items = list(result.all())
+        total = int(total_raw) if total_raw is not None else len(items)
+        return items, total
+    except SQLAlchemyError as exc:
+        logger.error(
+            "Database failure querying event enrichments: %s",
+            exc,
+            exc_info=True,
+        )
+        raise EventPersistenceError("Database retrieval failure") from exc

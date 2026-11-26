@@ -13,6 +13,14 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.events.enrichment_contract import (
+    CanonicalEnrichedObservable,
+    EnrichmentProvenance,
+    EnrichmentStatusEnum,
+    EventEnrichmentContextSections,
+    MAX_PROVIDER_NAME_LENGTH,
+    NormalizedEventEnrichmentPayload,
+)
 from app.events.query_contract import (
     DEFAULT_QUERY_LIMIT,
     DEFAULT_QUERY_OFFSET,
@@ -108,6 +116,13 @@ class EventIngestionResponse(BaseModel):
         default=None,
         description="Normalization outcome (normalized, normalized_with_warnings, failed, unsupported)",
     )
+    enrichment_status: Optional[str] = Field(
+        default=None,
+        description=(
+            "Canonical enrichment outcome (enriched, enriched_partial, "
+            "no_observables, skipped, failed) when normalization produced an event"
+        ),
+    )
     possible_duplicate: bool = Field(
         description="True if an identical raw_hash was previously ingested"
     )
@@ -146,6 +161,40 @@ class IngestedEventListResponse(BaseModel):
     limit: int
 
 
+class EventEnrichmentResponse(BaseModel):
+    """Safe API representation of separate event enrichment context (omits raw payloads)."""
+
+    enrichment_id: str
+    event_id: str
+    ingestion_id: str
+    provider: str
+    provider_version: str = Field(default="1.0.0")
+    enrichment_status: EnrichmentStatusEnum
+    live_lookup_performed: bool = False
+    observable_count: int = Field(default=0, ge=0)
+    observables: List[CanonicalEnrichedObservable] = Field(default_factory=list)
+    context: Optional[EventEnrichmentContextSections] = None
+    enrichment_data: Optional[NormalizedEventEnrichmentPayload] = None
+    provenance: EnrichmentProvenance
+    warnings: List[str] = Field(default_factory=list)
+    errors: List[str] = Field(default_factory=list)
+    attempt_count: int = Field(ge=1)
+    enriched_at: Optional[str] = None
+    created_at: str
+    updated_at: str
+
+
+class EventEnrichmentListResponse(BaseModel):
+    """Bounded, paginated list of event enrichment records."""
+
+    items: List[EventEnrichmentResponse]
+    count: int
+    total: int = Field(default=0, ge=0)
+    limit: int
+    offset: int = Field(default=0, ge=0)
+    has_more: bool = Field(default=False)
+
+
 class NormalizedEventResponse(BaseModel):
     """Safe API representation of a normalized security event (omits raw_payload)."""
 
@@ -173,6 +222,17 @@ class NormalizedEventResponse(BaseModel):
     normalization_status: str
     normalization_errors: List[str] = Field(default_factory=list)
     normalization_warnings: List[str] = Field(default_factory=list)
+    enrichment_status: Optional[str] = Field(
+        default=None,
+        description=(
+            "Canonical enrichment status (enriched, enriched_partial, "
+            "no_observables, skipped, failed)"
+        ),
+    )
+    enrichment: Optional[EventEnrichmentResponse] = Field(
+        default=None,
+        description="Persisted event enrichment context when available (omits raw payloads)",
+    )
     created_at: str
 
 
@@ -187,6 +247,30 @@ class NormalizedEventListResponse(BaseModel):
     has_more: bool = Field(
         default=False, description="True if additional matching events exist beyond offset + count"
     )
+
+
+class EventEnrichmentQueryParams(BaseModel):
+    """Validated query parameters for listing persisted event enrichments."""
+
+    limit: int = Field(default=DEFAULT_QUERY_LIMIT, ge=1, le=MAX_QUERY_LIMIT)
+    offset: int = Field(default=DEFAULT_QUERY_OFFSET, ge=0, le=MAX_QUERY_OFFSET)
+    enrichment_status: Optional[EnrichmentStatusEnum] = None
+    provider: Optional[str] = Field(default=None, max_length=MAX_PROVIDER_NAME_LENGTH)
+    sort_order: SortOrderEnum = SortOrderEnum.DESC
+
+    @field_validator("provider")
+    @classmethod
+    def validate_provider(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            return None
+        if not re.match(r"^[a-zA-Z0-9_.-]{1,64}$", stripped):
+            raise ValueError(
+                "provider must contain only alphanumeric, '.', '_', or '-' characters"
+            )
+        return stripped
 
 
 def build_payload_preview(raw_payload: str, max_chars: int = PREVIEW_MAX_CHARS) -> str:

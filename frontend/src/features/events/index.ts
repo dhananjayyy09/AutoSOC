@@ -4,6 +4,8 @@
 export { EventIngestionForm } from "./event-ingestion-form";
 export { RecentEventsList } from "./recent-events-list";
 export { NormalizationStatusBadge } from "./normalization-status-badge";
+export { EnrichmentStatusBadge } from "./enrichment-status-badge";
+export { EnrichmentContextPanel } from "./enrichment-context-panel";
 export { NormalizedEventView } from "./normalized-event-view";
 export { NormalizedEventExplorer, getNormalizedEventKey } from "./normalized-event-explorer";
 export {
@@ -13,6 +15,8 @@ export {
   queryNormalizedEvents,
   buildNormalizedEventsQueryString,
   fetchNormalizedEventById,
+  fetchNormalizedEventEnrichment,
+  retryNormalizedEventEnrichment,
   EVENT_INGEST_ENDPOINT,
   EVENTS_LIST_ENDPOINT,
   EVENTS_NORMALIZED_ENDPOINT,
@@ -36,7 +40,17 @@ export type {
   EventCategory,
   EventProtocol,
   NormalizationStatus,
+  CanonicalEnrichmentStatus,
+  EnrichmentStatus,
+  ObservableProvenance,
+  NetworkEnrichmentContext,
+  IndicatorEnrichmentContext,
+  ThreatIntelContext,
+  EventEnrichmentContextSections,
+  EventEnrichmentProvenance,
   NormalizedSecurityEvent,
+  EventObservableEnrichment,
+  EventEnrichmentContext,
 } from "@/types";
 
 export const EVENTS_CONFIG = {
