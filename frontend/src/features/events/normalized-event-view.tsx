@@ -90,11 +90,24 @@ export function NormalizedEventView({
       <CardHeader className="space-y-1">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <CardTitle className="text-lg">Event Inspection & Normalization</CardTitle>
-          <NormalizationStatusBadge
-            status={effectiveStatus}
-            warnings={normalizedEvent?.warnings}
-            errors={normalizedEvent?.errors}
-          />
+          <div className="flex flex-wrap items-center gap-3">
+            {rawEnvelope && (
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs font-medium text-muted-foreground">Ingestion:</span>
+                <Badge variant="outline" aria-label={`Ingestion status: ${rawEnvelope.status}`}>
+                  {rawEnvelope.status}
+                </Badge>
+              </div>
+            )}
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs font-medium text-muted-foreground">Normalization:</span>
+              <NormalizationStatusBadge
+                status={effectiveStatus}
+                warnings={normalizedEvent?.warnings}
+                errors={normalizedEvent?.errors}
+              />
+            </div>
+          </div>
         </div>
         <CardDescription>
           Raw ingestion evidence is kept separate from normalized schema fields.

@@ -4,8 +4,10 @@ import type {
   EventIngestionResponse,
   HealthCheckResponse,
   IngestedEventRecord,
+  NormalizedEventListResult,
   NormalizedEventResponse,
   NormalizedEventsEnvelope,
+  NormalizedEventsQueryParams,
   NormalizedSecurityEvent,
   ReadinessResponse,
   ReadinessResult,
@@ -386,28 +388,109 @@ export function mapNormalizedEventResponse(
 }
 
 /**
+ * Builds a URL query string for GET /api/v1/events/normalized from non-empty params.
+ */
+export function buildNormalizedEventsQueryString(
+  params: NormalizedEventsQueryParams = {}
+): string {
+  const searchParams = new URLSearchParams();
+  const safeLimit = Math.max(1, Math.min(params.limit ?? DEFAULT_RECENT_EVENTS_LIMIT, 100));
+  searchParams.set("limit", String(safeLimit));
+
+  if (typeof params.offset === "number" && params.offset > 0) {
+    searchParams.set("offset", String(Math.floor(params.offset)));
+  }
+
+  const trimmedSearch = params.search?.trim();
+  if (trimmedSearch) {
+    searchParams.set("search", trimmedSearch);
+  }
+
+  if (params.source_type) {
+    searchParams.set("source_type", params.source_type);
+  }
+
+  if (params.normalization_status) {
+    searchParams.set("normalization_status", params.normalization_status);
+  }
+
+  if (params.event_category) {
+    searchParams.set("event_category", params.event_category);
+  }
+
+  if (typeof params.severity === "number" && params.severity >= 1 && params.severity <= 5) {
+    searchParams.set("severity", String(params.severity));
+  }
+
+  if (params.sort_by) {
+    searchParams.set("sort_by", params.sort_by);
+  }
+
+  if (params.sort_order) {
+    searchParams.set("sort_order", params.sort_order);
+  }
+
+  return searchParams.toString();
+}
+
+/**
+ * Queries normalized security events from GET /api/v1/events/normalized with
+ * backend filter, sort, and pagination parameters.
+ */
+export const queryNormalizedEvents = async (
+  params: NormalizedEventsQueryParams = {}
+): Promise<NormalizedEventListResult> => {
+  const safeLimit = Math.max(1, Math.min(params.limit ?? DEFAULT_RECENT_EVENTS_LIMIT, 100));
+  const queryString = buildNormalizedEventsQueryString({ ...params, limit: safeLimit });
+
+  const res = await ApiClient.get<NormalizedEventResponse[] | NormalizedEventsEnvelope>(
+    `${EVENTS_NORMALIZED_ENDPOINT}?${queryString}`,
+    { cache: "no-store" }
+  );
+
+  if (Array.isArray(res)) {
+    const items = res
+      .filter((item): item is NormalizedEventResponse => Boolean(item && typeof item === "object"))
+      .slice(0, safeLimit)
+      .map(mapNormalizedEventResponse);
+    return {
+      items,
+      count: items.length,
+      limit: safeLimit,
+      offset: params.offset ?? 0,
+    };
+  }
+
+  if (res && typeof res === "object" && Array.isArray(res.items)) {
+    const items = res.items
+      .filter((item): item is NormalizedEventResponse => Boolean(item && typeof item === "object"))
+      .slice(0, safeLimit)
+      .map(mapNormalizedEventResponse);
+    return {
+      items,
+      count: typeof res.count === "number" ? res.count : items.length,
+      limit: typeof res.limit === "number" ? res.limit : safeLimit,
+      total: typeof res.total === "number" ? res.total : undefined,
+      offset: typeof res.offset === "number" ? res.offset : (params.offset ?? 0),
+    };
+  }
+
+  return {
+    items: [],
+    count: 0,
+    limit: safeLimit,
+    offset: params.offset ?? 0,
+  };
+};
+
+/**
  * Retrieves recent normalized security events from GET /api/v1/events/normalized.
  */
 export const fetchNormalizedEvents = async (
   limit = DEFAULT_RECENT_EVENTS_LIMIT
 ): Promise<NormalizedSecurityEvent[]> => {
-  const safeLimit = Math.max(1, Math.min(limit, 100));
-  const res = await ApiClient.get<NormalizedEventResponse[] | NormalizedEventsEnvelope>(
-    `${EVENTS_NORMALIZED_ENDPOINT}?limit=${safeLimit}`,
-    { cache: "no-store" }
-  );
-
-  let records: unknown[] = [];
-  if (Array.isArray(res)) {
-    records = res;
-  } else if (res && typeof res === "object" && Array.isArray(res.items)) {
-    records = res.items;
-  }
-
-  return records
-    .filter((item): item is NormalizedEventResponse => Boolean(item && typeof item === "object"))
-    .slice(0, safeLimit)
-    .map(mapNormalizedEventResponse);
+  const result = await queryNormalizedEvents({ limit });
+  return result.items;
 };
 
 /**
