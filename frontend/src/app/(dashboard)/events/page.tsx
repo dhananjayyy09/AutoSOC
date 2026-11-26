@@ -5,8 +5,10 @@ import { PageContainer } from "@/components/layout/page-container"
 import {
   EVENTS_CONFIG,
   EventIngestionForm,
+  NormalizedEventExplorer,
   NormalizedEventView,
   RecentEventsList,
+  getNormalizedEventKey,
 } from "@/features/events"
 import {
   ApiError,
@@ -83,6 +85,43 @@ export default function EventsPage() {
     [loadNormalizedForEvent]
   )
 
+  const handleSelectNormalizedFromExplorer = React.useCallback(
+    async (evt: NormalizedSecurityEvent) => {
+      const requestId = ++requestCounterRef.current
+      setSelectedEvent(null)
+      setNormalizedError(null)
+
+      if (!evt.event_id) {
+        setNormalizedEvent(evt)
+        setIsLoadingNormalized(false)
+        return
+      }
+
+      setNormalizedEvent(evt)
+      setIsLoadingNormalized(true)
+
+      try {
+        const detail = await fetchNormalizedEventById(evt.event_id)
+        if (requestCounterRef.current !== requestId) return
+        setNormalizedEvent(detail)
+      } catch (err) {
+        if (requestCounterRef.current !== requestId) return
+        if (err instanceof ApiError) {
+          setNormalizedError(err.userMessage)
+        } else if (isNetworkError(err)) {
+          setNormalizedError("Unable to reach the backend normalization endpoint.")
+        } else {
+          setNormalizedError("Unable to load normalized event details.")
+        }
+      } finally {
+        if (requestCounterRef.current === requestId) {
+          setIsLoadingNormalized(false)
+        }
+      }
+    },
+    []
+  )
+
   const handleIngestionSuccess = () => {
     setRefreshTrigger((prev) => prev + 1)
   }
@@ -106,12 +145,24 @@ export default function EventsPage() {
           </div>
         </div>
 
+        <NormalizedEventExplorer
+          refreshTrigger={refreshTrigger}
+          selectedEventKey={normalizedEvent ? getNormalizedEventKey(normalizedEvent) : null}
+          onSelectNormalizedEvent={handleSelectNormalizedFromExplorer}
+        />
+
         <NormalizedEventView
           rawEnvelope={selectedEvent}
           normalizedEvent={normalizedEvent}
           isLoading={isLoadingNormalized}
           error={normalizedError}
-          onRetry={() => void loadNormalizedForEvent(selectedEvent)}
+          onRetry={() => {
+            if (selectedEvent) {
+              void loadNormalizedForEvent(selectedEvent)
+            } else if (normalizedEvent) {
+              void handleSelectNormalizedFromExplorer(normalizedEvent)
+            }
+          }}
         />
       </div>
     </PageContainer>

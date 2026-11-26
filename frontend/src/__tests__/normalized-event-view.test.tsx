@@ -12,7 +12,6 @@ describe('NormalizationStatusBadge', () => {
     ['normalized_with_warnings', 'Normalized with Warnings'],
     ['accepted', 'Accepted (Raw)'],
     ['accepted_with_warnings', 'Accepted with Warnings'],
-    ['pending', 'Pending Normalization'],
     ['unsupported', 'Unsupported Source'],
     ['rejected', 'Rejected'],
     ['failed', 'Normalization Failed'],

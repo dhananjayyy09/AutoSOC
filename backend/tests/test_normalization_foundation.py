@@ -54,6 +54,8 @@ class InMemoryDay7Session:
         params = stmt.compile().params
         target_val = next(iter(params.values()), None)
         if "FROM normalized_events" in compiled:
+            if "count(" in compiled.lower():
+                return len(self.normalized_rows)
             if "WHERE normalized_events.ingestion_id" in compiled:
                 return next(
                     (n for n in self.normalized_rows if n.ingestion_id == target_val),

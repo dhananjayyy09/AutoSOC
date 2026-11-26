@@ -124,4 +124,9 @@ class NormalizedEvent(Base):
     __table_args__ = (
         # Supports deterministic descending retrieval of recent normalized events
         Index("idx_normalized_events_created_at_id", "created_at", "id"),
+        # Day 8 query & explorer indexes
+        Index("idx_normalized_events_event_timestamp", "event_timestamp", "id"),
+        Index("idx_normalized_events_source_type", "source_type"),
+        Index("idx_normalized_events_category_type", "event_category", "event_type"),
+        Index("idx_normalized_events_severity", "severity"),
     )

@@ -167,16 +167,27 @@ export type EventProtocol =
  * Known ingestion/normalization lifecycle statuses from backend contracts.
  * Unknown string values are also accepted for forward compatibility.
  */
+export type PersistedNormalizationStatus =
+  | "normalized"
+  | "normalized_with_warnings"
+  | "failed"
+  | "unsupported";
+
 export type NormalizationStatus =
   | "accepted"
   | "accepted_with_warnings"
   | "rejected"
-  | "unsupported"
-  | "pending"
-  | "normalized"
-  | "normalized_with_warnings"
-  | "failed"
+  | PersistedNormalizationStatus
   | (string & {});
+
+/** Allowlisted sort columns matching backend/app/events/query_contract.py. */
+export type NormalizedEventSortField =
+  | "created_at"
+  | "timestamp"
+  | "severity"
+  | "source_type"
+  | "event_category"
+  | "normalization_status";
 
 /**
  * Backend wire contract for GET /api/v1/events/normalized and /normalized/{event_id}.
@@ -215,6 +226,35 @@ export interface NormalizedEventsEnvelope {
   items: NormalizedEventResponse[];
   count: number;
   limit: number;
+  total?: number;
+  offset?: number;
+  has_more?: boolean;
+}
+
+/** Query parameters for the Normalized Event Explorer (Day 8). */
+export interface NormalizedEventsQueryParams {
+  limit?: number;
+  offset?: number;
+  search?: string;
+  source_type?: SecurityEventSource | string;
+  normalization_status?: PersistedNormalizationStatus | string;
+  event_category?: EventCategory | string;
+  event_type?: string;
+  severity?: number;
+  start_time?: string;
+  end_time?: string;
+  sort_by?: NormalizedEventSortField;
+  sort_order?: "asc" | "desc";
+}
+
+/** Normalized result returned by queryNormalizedEvents(). */
+export interface NormalizedEventListResult {
+  items: NormalizedSecurityEvent[];
+  count: number;
+  limit: number;
+  total?: number;
+  offset?: number;
+  has_more: boolean;
 }
 
 /**

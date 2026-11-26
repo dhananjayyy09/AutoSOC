@@ -13,7 +13,20 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.events.query_contract import (
+    DEFAULT_QUERY_LIMIT,
+    DEFAULT_QUERY_OFFSET,
+    MAX_EVENT_TYPE_LENGTH,
+    MAX_QUERY_LIMIT,
+    MAX_QUERY_OFFSET,
+    MAX_SEARCH_LENGTH,
+    NormalizedEventQueryParams,
+    NormalizedEventSortField,
+    SortOrderEnum,
+)
 from app.events.schemas import IngestionEnvelope, SourceTypeEnum
+
+EventSortFieldEnum = NormalizedEventSortField
 
 MAX_RAW_PAYLOAD_BYTES = 65_536  # 64 KiB per Security Data Contract §3 Stage 1
 RAW_HASH_PATTERN = re.compile(r"^sha256:[0-9a-fA-F]{64}$")
@@ -164,11 +177,16 @@ class NormalizedEventResponse(BaseModel):
 
 
 class NormalizedEventListResponse(BaseModel):
-    """Bounded list of recently normalized security events."""
+    """Bounded, paginated list of normalized security events."""
 
     items: List[NormalizedEventResponse]
     count: int
+    total: int = Field(default=0, ge=0, description="Total matching events before pagination")
     limit: int
+    offset: int = Field(default=0, ge=0, description="Zero-based pagination offset")
+    has_more: bool = Field(
+        default=False, description="True if additional matching events exist beyond offset + count"
+    )
 
 
 def build_payload_preview(raw_payload: str, max_chars: int = PREVIEW_MAX_CHARS) -> str:

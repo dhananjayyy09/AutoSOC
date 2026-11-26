@@ -8,6 +8,7 @@ import {
   fetchNormalizedEvents,
   fetchRecentEvents,
   ingestSecurityEvent,
+  queryNormalizedEvents,
 } from '@/lib/api'
 
 // Mock API functions only — clearly isolated unit tests (no live backend)
@@ -19,6 +20,7 @@ jest.mock('@/lib/api', () => {
     fetchRecentEvents: jest.fn(),
     fetchNormalizedEvents: jest.fn(),
     fetchNormalizedEventById: jest.fn(),
+    queryNormalizedEvents: jest.fn(),
   }
 })
 
@@ -26,10 +28,19 @@ const mockedIngest = ingestSecurityEvent as jest.MockedFunction<typeof ingestSec
 const mockedFetchRecent = fetchRecentEvents as jest.MockedFunction<typeof fetchRecentEvents>
 const mockedFetchNormalized = fetchNormalizedEvents as jest.MockedFunction<typeof fetchNormalizedEvents>
 const mockedFetchNormalizedById = fetchNormalizedEventById as jest.MockedFunction<typeof fetchNormalizedEventById>
+const mockedQueryNormalized = queryNormalizedEvents as jest.MockedFunction<typeof queryNormalizedEvents>
 
 beforeEach(() => {
   jest.clearAllMocks()
   mockedFetchNormalized.mockResolvedValue([])
+  mockedQueryNormalized.mockResolvedValue({
+    items: [],
+    count: 0,
+    limit: 20,
+    total: 0,
+    offset: 0,
+    has_more: false,
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -367,7 +378,7 @@ describe('EventsPage (mocked API)', () => {
     fireEvent.click(inspectBtn)
 
     expect(await screen.findByText('evt-norm-1')).toBeInTheDocument()
-    expect(screen.getByText('Normalized with Warnings')).toBeInTheDocument()
+    expect(screen.getByLabelText('Normalization status: Normalized with Warnings')).toBeInTheDocument()
     expect(screen.getByText('HIGH')).toBeInTheDocument()
     expect(screen.getByText('198.51.100.42:443')).toBeInTheDocument()
     expect(mockedFetchNormalizedById).not.toHaveBeenCalled()
