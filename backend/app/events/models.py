@@ -130,3 +130,64 @@ class NormalizedEvent(Base):
         Index("idx_normalized_events_category_type", "event_category", "event_type"),
         Index("idx_normalized_events_severity", "severity"),
     )
+
+
+class EventEnrichment(Base):
+    """
+    SQLAlchemy model storing separate contextual enrichment for a NormalizedEvent
+    without modifying normalized fields or raw source evidence.
+    """
+
+    __tablename__ = "event_enrichments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    enrichment_id: Mapped[str] = mapped_column(String(36), unique=True, nullable=False)
+    normalized_event_row_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("normalized_events.id", ondelete="RESTRICT"),
+        unique=True,
+        nullable=False,
+    )
+    event_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("normalized_events.event_id", ondelete="RESTRICT"),
+        unique=True,
+        nullable=False,
+    )
+    ingestion_id: Mapped[str] = mapped_column(String(36), unique=True, nullable=False)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    enrichment_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    enrichment_data: Mapped[Dict[str, Any]] = mapped_column(
+        _JSONB_VARIANT, nullable=False, default=dict
+    )
+    provenance: Mapped[Dict[str, Any]] = mapped_column(
+        _JSONB_VARIANT, nullable=False, default=dict
+    )
+    enrichment_warnings: Mapped[List[str]] = mapped_column(
+        _JSONB_VARIANT, nullable=False, default=list
+    )
+    enrichment_errors: Mapped[List[str]] = mapped_column(
+        _JSONB_VARIANT, nullable=False, default=list
+    )
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    enriched_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+    )
+
+    __table_args__ = (
+        Index("idx_event_enrichments_status", "enrichment_status"),
+        Index("idx_event_enrichments_provider", "provider"),
+        Index("idx_event_enrichments_created_at_id", "created_at", "id"),
+    )

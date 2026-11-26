@@ -89,3 +89,18 @@ class AlertGeneratorProtocol(Protocol):
         Returns: Alert dict if a new alert was created, or None if count was incremented.
         """
         ...
+
+
+@runtime_checkable
+class EventEnricherProtocol(Protocol):
+    """Derives deterministic contextual enrichment for a normalized security event."""
+
+    async def enrich(
+        self, normalized_event: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Enriches a normalized security event dictionary without mutating input fields.
+        Returns: EnrichmentResult-compatible dictionary containing status, provider,
+        provenance, enrichment_data, warnings, and errors.
+        """
+        ...
