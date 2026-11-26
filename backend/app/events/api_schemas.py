@@ -273,14 +273,16 @@ class NormalizedEventQueryParams(BaseModel):
 
 
 class NormalizedEventListResponse(BaseModel):
-    """Paginated, filtered list of recently normalized security events."""
+    """Bounded, paginated list of normalized security events."""
 
     items: List[NormalizedEventResponse]
     count: int
-    total: int = 0
+    total: int = Field(default=0, ge=0, description="Total matching events before pagination")
     limit: int
-    offset: int = 0
-    has_more: bool = False
+    offset: int = Field(default=0, ge=0, description="Zero-based pagination offset")
+    has_more: bool = Field(
+        default=False, description="True if additional matching events exist beyond offset + count"
+    )
 
 
 def build_payload_preview(raw_payload: str, max_chars: int = PREVIEW_MAX_CHARS) -> str:
