@@ -252,6 +252,17 @@ export const checkHealth = async (): Promise<{
   }
 };
 
+function hasReadinessDependencyBooleans(
+  obj: Record<string, unknown>
+): boolean {
+  return (
+    typeof obj.postgres === "boolean" &&
+    typeof obj.redis === "boolean" &&
+    typeof obj.qdrant === "boolean" &&
+    typeof obj.kafka === "boolean"
+  );
+}
+
 /**
  * Checks infrastructure readiness via GET /ready.
  *
@@ -260,18 +271,25 @@ export const checkHealth = async (): Promise<{
  * | 200         | all services true              | 'ready'        |
  * | 200         | any service false              | 'degraded'     |
  * | 503         | detail: { postgres, … }       | 'degraded'     |
- * | network err | –                              | 'unavailable'  |
+ * | network/bad | missing dependency booleans    | 'unavailable'  |
  */
 export const checkReadiness = async (): Promise<ReadinessResult> => {
   try {
     const res = await ApiClient.get<ReadinessResponse>("/ready", { cache: "no-store" });
 
-    if (!res || typeof res !== "object") {
+    if (
+      !res ||
+      typeof res !== "object" ||
+      Array.isArray(res) ||
+      !hasReadinessDependencyBooleans(res as unknown as Record<string, unknown>)
+    ) {
       return { state: "unavailable", error: new Error("Malformed /ready response") };
     }
 
+    const statusNormalized =
+      typeof res.status === "string" ? res.status.trim().toLowerCase() : "ok";
     const isReady =
-      res.status === "ok" &&
+      statusNormalized === "ok" &&
       res.postgres === true &&
       res.redis === true &&
       res.qdrant === true &&
@@ -280,41 +298,51 @@ export const checkReadiness = async (): Promise<ReadinessResult> => {
     return {
       state: isReady ? "ready" : "degraded",
       data: {
-        status: res.status ?? "ok",
-        postgres: Boolean(res.postgres),
-        redis: Boolean(res.redis),
-        qdrant: Boolean(res.qdrant),
-        kafka: Boolean(res.kafka),
+        status: typeof res.status === "string" ? res.status : "ok",
+        postgres: res.postgres,
+        redis: res.redis,
+        qdrant: res.qdrant,
+        kafka: res.kafka,
       },
     };
   } catch (error) {
     // FastAPI raises HTTPException(503) with a 'detail' dict for degraded state
     if (error instanceof ApiError && error.status === 503) {
-      const payload = error.data as Record<string, unknown> | undefined;
+      const payload =
+        error.data && typeof error.data === "object" && !Array.isArray(error.data)
+          ? (error.data as Record<string, unknown>)
+          : undefined;
       const detail = (
         payload &&
-        typeof payload === "object" &&
         "detail" in payload &&
         typeof payload.detail === "object" &&
-        payload.detail !== null
+        payload.detail !== null &&
+        !Array.isArray(payload.detail)
           ? payload.detail
           : payload
       ) as Record<string, unknown> | undefined;
 
-      if (detail && typeof detail === "object") {
+      if (detail && typeof detail === "object" && hasReadinessDependencyBooleans(detail)) {
         return {
           state: "degraded",
           data: {
             status: typeof detail.status === "string" ? detail.status : "degraded",
-            postgres: Boolean(detail.postgres),
-            redis: Boolean(detail.redis),
-            qdrant: Boolean(detail.qdrant),
-            kafka: Boolean(detail.kafka),
+            postgres: detail.postgres as boolean,
+            redis: detail.redis as boolean,
+            qdrant: detail.qdrant as boolean,
+            kafka: detail.kafka as boolean,
           },
           error,
         };
       }
-      return { state: "degraded", error };
+      if (
+        detail &&
+        typeof detail.status === "string" &&
+        detail.status.trim().toLowerCase() === "degraded"
+      ) {
+        return { state: "degraded", error };
+      }
+      return { state: "unavailable", error };
     }
 
     return { state: "unavailable", error };
@@ -323,7 +351,8 @@ export const checkReadiness = async (): Promise<ReadinessResult> => {
 
 /**
  * Fetches system information via GET /api/v1/system/info.
- * Resolves to { status: "ok", data } when available, or { status: "unavailable", error } on error.
+ * Resolves to { status: "ok", data } when valid contract fields are present,
+ * or { status: "unavailable", error } on transport/malformed errors.
  */
 export const checkSystemInfo = async (): Promise<{
   status: "ok" | "unavailable";
@@ -332,6 +361,17 @@ export const checkSystemInfo = async (): Promise<{
 }> => {
   try {
     const res = await ApiClient.get<SystemInfoResponse>("/api/v1/system/info", { cache: "no-store" });
+    if (
+      !res ||
+      typeof res !== "object" ||
+      Array.isArray(res) ||
+      typeof res.project_name !== "string" ||
+      typeof res.version !== "string" ||
+      typeof res.api_version !== "string" ||
+      typeof res.environment !== "string"
+    ) {
+      return { status: "unavailable", error: new Error("Malformed /api/v1/system/info response") };
+    }
     return { status: "ok", data: res };
   } catch (error) {
     return { status: "unavailable", error };
@@ -365,7 +405,7 @@ export const ingestSecurityEvent = async (
   payload: EventIngestionRequest
 ): Promise<EventIngestionResponse> => {
   const res = await ApiClient.post<EventIngestionResponse>(EVENT_INGEST_ENDPOINT, payload);
-  if (!res || typeof res !== "object" || typeof res.ingestion_id !== "string") {
+  if (!res || typeof res !== "object" || Array.isArray(res) || typeof res.ingestion_id !== "string") {
     throw new Error("Malformed response from event ingestion endpoint");
   }
   return res;
@@ -385,7 +425,7 @@ export const fetchRecentEvents = async (
     { cache: "no-store" }
   );
 
-  let records: unknown[] = [];
+  let records: unknown[] | null = null;
   if (Array.isArray(res)) {
     records = res;
   } else if (res && typeof res === "object") {
@@ -394,6 +434,10 @@ export const fetchRecentEvents = async (
     } else if (Array.isArray(res.items)) {
       records = res.items;
     }
+  }
+
+  if (records === null) {
+    throw new Error("Malformed response from ingested events endpoint");
   }
 
   return records
@@ -544,7 +588,7 @@ function normalizeEnrichmentContext(
   rawEnrichment: unknown,
   fallbackStatus?: string | null
 ): EventEnrichmentContext | null {
-  if (!rawEnrichment || typeof rawEnrichment !== "object") {
+  if (!rawEnrichment || typeof rawEnrichment !== "object" || Array.isArray(rawEnrichment)) {
     if (typeof fallbackStatus === "string" && fallbackStatus.trim()) {
       return { status: fallbackStatus };
     }
@@ -970,13 +1014,7 @@ export const queryNormalizedEvents = async (
     };
   }
 
-  return {
-    items: [],
-    count: 0,
-    limit: safeLimit,
-    offset: safeOffset,
-    has_more: false,
-  };
+  throw new Error("Malformed response from normalized events endpoint");
 };
 
 /**
@@ -1017,6 +1055,16 @@ export const fetchNormalizedEventEnrichment = async (
     `${EVENTS_NORMALIZED_ENDPOINT}/${encodeURIComponent(eventId)}/enrichment`,
     { cache: "no-store" }
   );
+  if (
+    !res ||
+    typeof res !== "object" ||
+    Array.isArray(res) ||
+    (typeof res.enrichment_status !== "string" &&
+      typeof res.status !== "string" &&
+      typeof res.enrichment_id !== "string")
+  ) {
+    throw new Error("Malformed response from normalized event enrichment endpoint");
+  }
   const mapped = normalizeEnrichmentContext(res);
   if (!mapped) {
     throw new Error("Malformed response from normalized event enrichment endpoint");
@@ -1036,6 +1084,16 @@ export const retryNormalizedEventEnrichment = async (
   const res = await ApiClient.post<Record<string, unknown>>(
     `${EVENTS_NORMALIZED_ENDPOINT}/${encodeURIComponent(eventId)}/enrich${suffix}`
   );
+  if (
+    !res ||
+    typeof res !== "object" ||
+    Array.isArray(res) ||
+    (typeof res.enrichment_status !== "string" &&
+      typeof res.status !== "string" &&
+      typeof res.enrichment_id !== "string")
+  ) {
+    throw new Error("Malformed response from event enrich endpoint");
+  }
   const mapped = normalizeEnrichmentContext(res);
   if (!mapped) {
     throw new Error("Malformed response from event enrich endpoint");
