@@ -8,6 +8,7 @@ import {
   Gauge,
   HelpCircle,
   MinusCircle,
+  PauseCircle,
   RotateCcw,
   ServerOff,
   ShieldAlert,
@@ -124,6 +125,18 @@ export function getLookupStatusPresentation(
         label: "Unsupported",
         className: "border-slate-500/40 bg-slate-500/10 text-slate-300",
         Icon: MinusCircle,
+      }
+    case "provider_disabled":
+      return {
+        label: "Provider Disabled",
+        className: "border-slate-500/40 bg-slate-500/10 text-slate-300",
+        Icon: PauseCircle,
+      }
+    case "invalid_observable":
+      return {
+        label: "Invalid Observable",
+        className: "border-amber-500/40 bg-amber-500/10 text-amber-300",
+        Icon: AlertTriangle,
       }
     case "invalid_response":
     case "malformed_response":

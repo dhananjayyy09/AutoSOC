@@ -1,56 +1,15 @@
 """
-<<<<<<< HEAD
-AutoSOC - Threat Intelligence Provider Reliability & Operational Status (Day 11)
+AutoSOC - Threat Intelligence Provider Reliability, Operational Status & Security Semantics (Day 11)
 
-Implements bounded retry policy with exponential backoff + Retry-After support,
-per-provider circuit breaker with half-open cooldown recovery, and sanitized
-operational status diagnostics without exposing credentials or raw data.
+Unified reliability layer combining:
+  - Bounded retry policy with exponential backoff + Retry-After support
+  - Per-provider circuit breaker with half-open cooldown recovery
+  - Sanitized operational status diagnostics without exposing credentials or raw data
+  - Shared RetryPolicy, ProviderCircuitBreaker, safe-request, and evidence/verdict invariants
 """
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from enum import Enum
-import time
-from typing import Any, Callable, Dict, List, Optional
-
-from pydantic import BaseModel, ConfigDict, Field
-
-
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-class ProviderOperationalStateEnum(str, Enum):
-    """Operational availability classification for a TI provider."""
-
-    HEALTHY = "healthy"
-    DEGRADED = "degraded"
-    UNAVAILABLE = "unavailable"
-    DISABLED = "disabled"
-
-
-class CircuitBreakerStateEnum(str, Enum):
-    """Per-provider circuit-breaker state machine."""
-=======
-AutoSOC - Threat Intelligence Provider Reliability & Security Semantics (Day 11)
-
-Defines unified operational-state, retry, circuit-breaker, safe-request, and
-evidence/verdict invariants shared by `ThreatIntelOrchestrator` and
-`ThreatIntelObservablePipeline` without creating a second orchestration path.
-
-Key Security Guarantees:
-  1. Operational failures (`unavailable`, `timeout`, `rate_limited`, `retry_exhausted`,
-     `circuit_open`, `provider_disabled`, `malformed_response`) NEVER convert to `benign`
-     or `malicious`; observable verdicts stay `unknown`.
-  2. `no_result` / `no_data` is distinct from operational failures, does not trip
-     circuit breakers, and never infers `benign`.
-  3. Retries apply only to transient operational failures and NEVER duplicate evidence
-     or references across attempts.
-  4. Outbound provider requests allow ONLY `observable_type` and `normalized_value`
-     (plus bounded `timeout_seconds` where used internally) — never raw payloads,
-     event IDs, user IDs, unrelated command lines, or credentials.
-"""
-
 from enum import Enum
 import time
 from typing import (
@@ -65,6 +24,8 @@ from typing import (
     Tuple,
 )
 
+from pydantic import ConfigDict
+
 from app.events.schemas import BaseModel, Field
 from app.events.validation import ValidationErrorCategory, ValidationIssue
 from app.threat_intelligence.provider_contract import (
@@ -76,6 +37,11 @@ from app.threat_intelligence.provider_contract import (
     validate_observable_for_lookup,
 )
 from app.threat_intelligence.schemas import ObservableTypeEnum, ObservableVerdictEnum
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
 
 RETRYABLE_STATUS_VALUES: FrozenSet[str] = frozenset(
     {"timeout", "unavailable", "rate_limited"}
@@ -130,26 +96,142 @@ FORBIDDEN_OUTBOUND_REQUEST_KEYS: FrozenSet[str] = frozenset(
 
 
 class ProviderOperationalStateEnum(str, Enum):
-    """Operational health/availability state of a TI provider."""
+    """Unified operational health/availability classification for a TI provider."""
 
     HEALTHY = "healthy"
     DEGRADED = "degraded"
     RATE_LIMITED = "rate_limited"
     CIRCUIT_OPEN = "circuit_open"
+    UNAVAILABLE = "unavailable"
     DISABLED = "disabled"
     UNCONFIGURED = "unconfigured"
 
 
 class CircuitBreakerStateEnum(str, Enum):
-    """Standard three-state circuit breaker FSM."""
->>>>>>> origin/feature/pranjal/day11
+    """Standard three-state circuit breaker FSM (CLOSED -> OPEN -> HALF_OPEN)."""
 
     CLOSED = "closed"
     OPEN = "open"
     HALF_OPEN = "half_open"
 
 
-<<<<<<< HEAD
+class RetryPolicy(BaseModel):
+    """
+    Bounded retry configuration for transient TI provider failures.
+    Default `max_attempts=1` maintains single-attempt behavior unless retries are enabled.
+    """
+
+    max_attempts: int = Field(
+        default=1,
+        ge=1,
+        le=5,
+        description="Total attempts including initial lookup (1 = no retries)",
+    )
+
+    def should_retry(self, status_value: str, attempt_number: int) -> bool:
+        """Return True only for retryable transient statuses before max_attempts is reached."""
+        if attempt_number >= self.max_attempts:
+            return False
+        return str(status_value).lower() in RETRYABLE_STATUS_VALUES
+
+
+class _CircuitRecord:
+    def __init__(self) -> None:
+        self.state: CircuitBreakerStateEnum = CircuitBreakerStateEnum.CLOSED
+        self.consecutive_failures: int = 0
+        self.opened_at: Optional[float] = None
+        self.last_failure_status: Optional[str] = None
+
+
+class ProviderCircuitBreaker:
+    """
+    Per-provider circuit breaker preventing cascading failures while keeping
+    observable verdicts strictly isolated from provider health.
+    """
+
+    def __init__(
+        self,
+        *,
+        failure_threshold: int = 3,
+        cooldown_seconds: float = 60.0,
+        clock: Optional[Callable[[], float]] = None,
+    ) -> None:
+        self._failure_threshold = max(1, int(failure_threshold))
+        self._cooldown_seconds = max(0.0, float(cooldown_seconds))
+        self._clock = clock or time.monotonic
+        self._records: Dict[str, _CircuitRecord] = {}
+
+    def _get_record(self, provider_name: str) -> _CircuitRecord:
+        key = provider_name.strip().lower()
+        if key not in self._records:
+            self._records[key] = _CircuitRecord()
+        return self._records[key]
+
+    def get_state(self, provider_name: str) -> CircuitBreakerStateEnum:
+        rec = self._get_record(provider_name)
+        if rec.state == CircuitBreakerStateEnum.OPEN and rec.opened_at is not None:
+            if (self._clock() - rec.opened_at) >= self._cooldown_seconds:
+                rec.state = CircuitBreakerStateEnum.HALF_OPEN
+        return rec.state
+
+    def allow_request(self, provider_name: str) -> bool:
+        """Return True when CLOSED or HALF_OPEN (probe allowed); False when OPEN."""
+        state = self.get_state(provider_name)
+        return state != CircuitBreakerStateEnum.OPEN
+
+    def record_success(self, provider_name: str) -> None:
+        """Reset failure count and close circuit after a successful or clean no-data lookup."""
+        rec = self._get_record(provider_name)
+        rec.state = CircuitBreakerStateEnum.CLOSED
+        rec.consecutive_failures = 0
+        rec.opened_at = None
+        rec.last_failure_status = None
+
+    def record_failure(self, provider_name: str, status_value: str) -> CircuitBreakerStateEnum:
+        """
+        Record an operational failure. Non-failure statuses (`no_result`, `no_data`,
+        `unsupported`, etc.) never increment failure count or open the circuit.
+        """
+        norm_status = str(status_value).lower()
+        if norm_status not in OPERATIONAL_FAILURE_STATUS_VALUES:
+            return self.get_state(provider_name)
+
+        rec = self._get_record(provider_name)
+        rec.last_failure_status = norm_status
+
+        if rec.state == CircuitBreakerStateEnum.HALF_OPEN:
+            rec.state = CircuitBreakerStateEnum.OPEN
+            rec.opened_at = self._clock()
+            return rec.state
+
+        rec.consecutive_failures += 1
+        if rec.consecutive_failures >= self._failure_threshold:
+            rec.state = CircuitBreakerStateEnum.OPEN
+            rec.opened_at = self._clock()
+        return rec.state
+
+    def get_operational_state(
+        self,
+        provider_name: str,
+        *,
+        enabled: bool = True,
+        configured: bool = True,
+    ) -> ProviderOperationalStateEnum:
+        if not enabled:
+            return ProviderOperationalStateEnum.DISABLED
+        if not configured:
+            return ProviderOperationalStateEnum.UNCONFIGURED
+        rec = self._get_record(provider_name)
+        cb_state = self.get_state(provider_name)
+        if cb_state == CircuitBreakerStateEnum.OPEN:
+            return ProviderOperationalStateEnum.CIRCUIT_OPEN
+        if rec.last_failure_status == "rate_limited" and rec.consecutive_failures > 0:
+            return ProviderOperationalStateEnum.RATE_LIMITED
+        if cb_state == CircuitBreakerStateEnum.HALF_OPEN or rec.consecutive_failures > 0:
+            return ProviderOperationalStateEnum.DEGRADED
+        return ProviderOperationalStateEnum.HEALTHY
+
+
 class ProviderFailureCategoryEnum(str, Enum):
     """Sanitized failure classification (never exposes secrets or raw payloads)."""
 
@@ -245,45 +327,10 @@ class ProviderReliabilityTracker:
     In-process tracker maintaining bounded per-provider failure counters,
     circuit-breaker transitions (CLOSED -> OPEN -> HALF_OPEN -> CLOSED),
     and operational status snapshots.
-=======
-class RetryPolicy(BaseModel):
-    """
-    Bounded retry configuration for transient TI provider failures.
-    Default `max_attempts=1` maintains single-attempt behavior unless retries are enabled.
-    """
-
-    max_attempts: int = Field(
-        default=1,
-        ge=1,
-        le=5,
-        description="Total attempts including initial lookup (1 = no retries)",
-    )
-
-    def should_retry(self, status_value: str, attempt_number: int) -> bool:
-        """Return True only for retryable transient statuses before max_attempts is reached."""
-        if attempt_number >= self.max_attempts:
-            return False
-        return str(status_value).lower() in RETRYABLE_STATUS_VALUES
-
-
-class _CircuitRecord:
-    def __init__(self) -> None:
-        self.state: CircuitBreakerStateEnum = CircuitBreakerStateEnum.CLOSED
-        self.consecutive_failures: int = 0
-        self.opened_at: Optional[float] = None
-        self.last_failure_status: Optional[str] = None
-
-
-class ProviderCircuitBreaker:
-    """
-    Per-provider circuit breaker preventing cascading failures while keeping
-    observable verdicts strictly isolated from provider health.
->>>>>>> origin/feature/pranjal/day11
     """
 
     def __init__(
         self,
-<<<<<<< HEAD
         policy: Optional[ProviderReliabilityPolicy] = None,
         *,
         clock: Optional[Callable[[], float]] = None,
@@ -455,86 +502,6 @@ class ProviderCircuitBreaker:
             cooldown_remaining_seconds=cooldown_remaining,
             last_error_summary=state.last_error_summary,
         )
-=======
-        *,
-        failure_threshold: int = 3,
-        cooldown_seconds: float = 60.0,
-        clock: Optional[Callable[[], float]] = None,
-    ) -> None:
-        self._failure_threshold = max(1, int(failure_threshold))
-        self._cooldown_seconds = max(0.0, float(cooldown_seconds))
-        self._clock = clock or time.monotonic
-        self._records: Dict[str, _CircuitRecord] = {}
-
-    def _get_record(self, provider_name: str) -> _CircuitRecord:
-        key = provider_name.strip().lower()
-        if key not in self._records:
-            self._records[key] = _CircuitRecord()
-        return self._records[key]
-
-    def get_state(self, provider_name: str) -> CircuitBreakerStateEnum:
-        rec = self._get_record(provider_name)
-        if rec.state == CircuitBreakerStateEnum.OPEN and rec.opened_at is not None:
-            if (self._clock() - rec.opened_at) >= self._cooldown_seconds:
-                rec.state = CircuitBreakerStateEnum.HALF_OPEN
-        return rec.state
-
-    def allow_request(self, provider_name: str) -> bool:
-        """Return True when CLOSED or HALF_OPEN (probe allowed); False when OPEN."""
-        state = self.get_state(provider_name)
-        return state != CircuitBreakerStateEnum.OPEN
-
-    def record_success(self, provider_name: str) -> None:
-        """Reset failure count and close circuit after a successful or clean no-data lookup."""
-        rec = self._get_record(provider_name)
-        rec.state = CircuitBreakerStateEnum.CLOSED
-        rec.consecutive_failures = 0
-        rec.opened_at = None
-        rec.last_failure_status = None
-
-    def record_failure(self, provider_name: str, status_value: str) -> CircuitBreakerStateEnum:
-        """
-        Record an operational failure. Non-failure statuses (`no_result`, `no_data`,
-        `unsupported`, etc.) never increment failure count or open the circuit.
-        """
-        norm_status = str(status_value).lower()
-        if norm_status not in OPERATIONAL_FAILURE_STATUS_VALUES:
-            return self.get_state(provider_name)
-
-        rec = self._get_record(provider_name)
-        rec.last_failure_status = norm_status
-
-        if rec.state == CircuitBreakerStateEnum.HALF_OPEN:
-            rec.state = CircuitBreakerStateEnum.OPEN
-            rec.opened_at = self._clock()
-            return rec.state
-
-        rec.consecutive_failures += 1
-        if rec.consecutive_failures >= self._failure_threshold:
-            rec.state = CircuitBreakerStateEnum.OPEN
-            rec.opened_at = self._clock()
-        return rec.state
-
-    def get_operational_state(
-        self,
-        provider_name: str,
-        *,
-        enabled: bool = True,
-        configured: bool = True,
-    ) -> ProviderOperationalStateEnum:
-        if not enabled:
-            return ProviderOperationalStateEnum.DISABLED
-        if not configured:
-            return ProviderOperationalStateEnum.UNCONFIGURED
-        rec = self._get_record(provider_name)
-        cb_state = self.get_state(provider_name)
-        if cb_state == CircuitBreakerStateEnum.OPEN:
-            return ProviderOperationalStateEnum.CIRCUIT_OPEN
-        if rec.last_failure_status == "rate_limited" and rec.consecutive_failures > 0:
-            return ProviderOperationalStateEnum.RATE_LIMITED
-        if cb_state == CircuitBreakerStateEnum.HALF_OPEN or rec.consecutive_failures > 0:
-            return ProviderOperationalStateEnum.DEGRADED
-        return ProviderOperationalStateEnum.HEALTHY
 
 
 def deduplicate_references(references: Sequence[Any]) -> List[Any]:
@@ -852,4 +819,3 @@ def execute_lookup_with_reliability(
         errors=final_errors,
         live_lookup_performed=last_result.live_lookup_performed,
     )
->>>>>>> origin/feature/pranjal/day11

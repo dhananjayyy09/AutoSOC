@@ -1,43 +1,37 @@
 """
-<<<<<<< HEAD
-AutoSOC Day 11 Tests - TI Provider Reliability & Operational Observability
-==========================================================================
+AutoSOC Day 11 Tests - TI Provider Reliability, Operational Observability & Security Semantics
+==============================================================================================
 Covers:
   1. Validated retry, exponential backoff, and circuit-breaker config settings
-  2. Transient failure followed by successful retry (bounded exponential backoff)
+  2. Transient failure followed by successful retry (bounded exponential backoff) & no duplicate refs
   3. Retry exhaustion without infinite retries & without caching failures
-  4. Rate-limit HTTP 429 Retry-After honoring (strictly capped at max_delay)
+  4. Rate-limit HTTP 429 Retry-After honoring (strictly capped at max_delay) & rate_limited isolation
   5. Circuit breaker opening after repeated failures, short-circuiting, cooldown HALF_OPEN recovery, & health check recovery
   6. Provider timeout retries & preservation of existing valid EventEnrichment rows
   7. Permanent validation / malformed / auth 401 failures NOT retried
   8. Ordinary no_result (HTTP 404 / fixture miss) NOT retried & counts as reachable
   9. Disabled provider operational state & GET /api/v1/events/threat-intelligence/providers
- 10. Sanitized operational diagnostics (no secrets, auth headers, or raw payloads leaked)
+ 10. Sanitized operational diagnostics & safe minimal provider request enforcement
  11. Cache & persistence integrity under failure (no duplicate EventEnrichment rows)
-=======
-AutoSOC Day 11 - Threat Intelligence Provider Reliability & Security Semantics Tests
-
-Covers:
-  - All 12 provider outcomes/failure modes (found, no_result, unsupported_observable,
-    invalid_observable, unavailable, timeout, rate_limited, malformed_response,
-    retry_exhausted, circuit_open, provider_disabled, partial enrichment)
-  - Bounded transient retries & recovery without duplicating evidence or references
-  - Non-retryable guarantees (no_result, malformed_response, unsupported never retried)
-  - Per-provider circuit breaker FSM (closed -> open -> half_open -> closed) & isolation
-  - Strict evidence & verdict invariants (malicious requires evidence; failure != benign)
-  - Safe minimal provider request enforcement (no raw payloads, event IDs, users, secrets)
-  - SyncTIProviderAdapter compatibility with Day 11 statuses
-  - Zero external network calls in default tests
->>>>>>> origin/feature/pranjal/day11
+ 12. Strict evidence & verdict invariants across ThreatIntelObservablePipeline and SyncTIProviderAdapter
 """
 
 import asyncio
-import json
-<<<<<<< HEAD
 from datetime import datetime, timezone
+import json
+from pathlib import Path
+import socket
+import sys
 from typing import Any, Dict, List
+import unittest
 from unittest.mock import patch
+import urllib.request
 from uuid import uuid4
+
+# Ensure backend root is on sys.path
+backend_dir = Path(__file__).resolve().parent.parent
+if str(backend_dir) not in sys.path:
+    sys.path.insert(0, str(backend_dir))
 
 import httpx
 import pytest
@@ -48,22 +42,36 @@ from main import app
 from app.core.config import Settings
 from app.db.session import get_db
 from app.events.enrichment_service import DeterministicLocalEnricher, EnrichmentService
+from app.events.schemas import EventCategoryEnum, NormalizedSecurityEvent, SourceTypeEnum
 from app.events.validation import compute_raw_hash
 from app.threat_intelligence import (
     AbuseIPDBProvider,
     CircuitBreakerStateEnum,
+    EnrichmentStatusEnum,
     FixtureThreatIntelProvider,
+    ObservableLookupRequest,
+    ObservableLookupResult,
     ObservableTypeEnum,
+    ObservableVerdictEnum,
+    ProviderCircuitBreaker,
     ProviderFailureCategoryEnum,
+    ProviderLookupStatusEnum,
     ProviderOperationalStateEnum,
+    ProviderReference,
     ProviderReliabilityPolicy,
     ProviderReliabilityTracker,
+    RetryPolicy,
     SyncTIProviderAdapter,
     ThreatIntelCache,
     ThreatIntelLookupRequest,
+    ThreatIntelLookupStatusEnum,
+    ThreatIntelObservablePipeline,
     ThreatIntelOrchestrator,
     ThreatIntelProviderUnavailableError,
     VirusTotalProvider,
+    deduplicate_references,
+    enforce_verdict_and_evidence_invariants,
+    validate_safe_provider_request,
 )
 from tests.test_enrichment_foundation import InMemoryDay9Session
 
@@ -718,41 +726,6 @@ def test_providers_status_endpoint_disabled_and_scrubs_secrets():
     d_body = disabled_resp.json()
     assert d_body["ti_enabled"] is False
     assert all(p["operational_state"] == "disabled" for p in d_body["providers"])
-=======
-from pathlib import Path
-import socket
-import sys
-import unittest
-from unittest.mock import patch
-import urllib.request
-
-# Ensure backend root is on sys.path
-backend_dir = Path(__file__).resolve().parent.parent
-if str(backend_dir) not in sys.path:
-    sys.path.insert(0, str(backend_dir))
-
-from app.events.schemas import EventCategoryEnum, NormalizedSecurityEvent, SourceTypeEnum
-from app.threat_intelligence import (
-    CircuitBreakerStateEnum,
-    EnrichmentStatusEnum,
-    FixtureThreatIntelProvider,
-    ObservableLookupRequest,
-    ObservableLookupResult,
-    ObservableTypeEnum,
-    ObservableVerdictEnum,
-    ProviderCircuitBreaker,
-    ProviderLookupStatusEnum,
-    ProviderOperationalStateEnum,
-    ProviderReference,
-    RetryPolicy,
-    SyncTIProviderAdapter,
-    ThreatIntelLookupRequest,
-    ThreatIntelLookupStatusEnum,
-    ThreatIntelObservablePipeline,
-    deduplicate_references,
-    enforce_verdict_and_evidence_invariants,
-    validate_safe_provider_request,
-)
 
 
 def _make_event(**overrides) -> NormalizedSecurityEvent:
@@ -1120,4 +1093,3 @@ class TestSecurityEvidenceAndSafeRequestInvariants(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
->>>>>>> origin/feature/pranjal/day11

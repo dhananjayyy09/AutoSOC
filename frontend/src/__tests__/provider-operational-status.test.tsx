@@ -179,6 +179,8 @@ describe('Day 11 lookup outcome clarity', () => {
     ['retry_exhausted', 'Retry Exhausted'],
     ['circuit_open', 'Circuit Breaker Open'],
     ['circuit_breaker_open', 'Circuit Breaker Open'],
+    ['provider_disabled', 'Provider Disabled'],
+    ['invalid_observable', 'Invalid Observable'],
     ['unsupported_observable', 'Unsupported'],
     ['malformed_response', 'Malformed Response'],
     ['invalid_response', 'Malformed Response'],
@@ -352,5 +354,117 @@ describe('Manual enrichment retry & recovery feedback (mocked API)', () => {
         expect.objectContaining({ method: 'POST' })
       )
     })
+  })
+
+  it('fetches and normalizes live backend GET /api/v1/events/threat-intelligence/providers contract', async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: { get: () => 'application/json' },
+        json: async () => ({
+          ti_enabled: true,
+          policy: { max_retries: 2, circuit_breaker_threshold: 3 },
+          generated_at: '2026-11-28T16:40:00Z',
+          providers: [
+            {
+              provider: 'autosoc.mock_ti_fixture',
+              provider_version: '0.1.0',
+              enabled: true,
+              configured: true,
+              operational_state: 'healthy',
+              circuit_state: 'closed',
+              consecutive_failures: 0,
+              total_requests: 5,
+              total_failures: 1,
+              total_retries: 1,
+              last_success_at: '2026-11-28T16:39:50Z',
+              last_failure_at: null,
+              last_failure_category: 'none',
+              cooldown_remaining_seconds: null,
+              last_error_summary: null,
+            },
+            {
+              provider: 'virustotal',
+              provider_version: 'v3',
+              enabled: true,
+              configured: false,
+              operational_state: 'unavailable',
+              circuit_state: 'open',
+              consecutive_failures: 3,
+              total_requests: 3,
+              total_failures: 3,
+              total_retries: 2,
+              last_success_at: null,
+              last_failure_at: '2026-11-28T16:39:55Z',
+              last_failure_category: 'timeout',
+              cooldown_remaining_seconds: 42.5,
+              last_error_summary: 'virustotal unavailable: Bearer secret_leak',
+            },
+          ],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 404,
+        statusText: 'Not Found',
+        json: async () => ({ detail: 'Not found' }),
+      })
+    global.fetch = fetchMock as unknown as typeof fetch
+
+    const liveResult = await apiModule.fetchThreatIntelProvidersStatus()
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining('/api/v1/events/threat-intelligence/providers'),
+      expect.objectContaining({ method: 'GET' })
+    )
+    expect(liveResult.supported).toBe(true)
+    expect(liveResult.ti_enabled).toBe(true)
+    expect(liveResult.generated_at).toBe('2026-11-28T16:40:00Z')
+    expect(liveResult.providers).toHaveLength(2)
+
+    expect(liveResult.providers[0]).toMatchObject({
+      provider_id: 'autosoc.mock_ti_fixture',
+      provider_version: '0.1.0',
+      enabled: true,
+      configured: true,
+      status: 'healthy',
+      circuit_breaker_state: 'closed',
+      retry_count: 1,
+      failure_category: null, // 'none' suppressed cleanly
+      consecutive_failures: 0,
+      total_requests: 5,
+      total_failures: 1,
+    })
+    expect(liveResult.providers[1]).toMatchObject({
+      provider_id: 'virustotal',
+      provider_version: 'v3',
+      enabled: true,
+      configured: false,
+      status: 'unavailable',
+      circuit_breaker_state: 'open',
+      retry_count: 2,
+      failure_category: 'timeout',
+      cooldown_remaining_seconds: 42.5,
+      last_error_summary: 'virustotal unavailable: Bearer [REDACTED]',
+    })
+
+    render(
+      <ProviderStatusPanel
+        providers={liveResult.providers}
+        tiEnabled={liveResult.ti_enabled}
+        generatedAt={liveResult.generated_at}
+        backendSupported={liveResult.supported}
+      />
+    )
+    expect(screen.getByText('TI Enabled')).toBeInTheDocument()
+    expect(screen.getByText('Not Configured')).toBeInTheDocument()
+    expect(screen.getByText('42.5s')).toBeInTheDocument()
+    expect(screen.getByText('virustotal unavailable: Bearer [REDACTED]')).toBeInTheDocument()
+    expect(screen.queryByText(/secret_leak/)).not.toBeInTheDocument()
+
+    const notFoundResult = await apiModule.fetchThreatIntelProvidersStatus()
+    expect(notFoundResult).toEqual({ supported: false, providers: [] })
   })
 })

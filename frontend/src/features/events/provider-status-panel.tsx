@@ -22,6 +22,8 @@ import type { ThreatIntelProviderStatus } from "@/types"
 
 interface ProviderStatusPanelProps {
   providers?: ThreatIntelProviderStatus[] | null
+  tiEnabled?: boolean | null
+  generatedAt?: string | null
   isLoading?: boolean
   error?: string | null
   onRetry?: () => void
@@ -47,19 +49,30 @@ function getProviderHealthPresentation(provider: ThreatIntelProviderStatus) {
         Icon: CheckCircle2,
       }
     case "degraded":
-    case "rate_limited":
       return {
         label: "Degraded",
         className: "border-amber-500/40 bg-amber-500/10 text-amber-300",
         Icon: AlertTriangle,
       }
+    case "rate_limited":
+      return {
+        label: "Rate Limited",
+        className: "border-amber-500/40 bg-amber-500/10 text-amber-300",
+        Icon: AlertTriangle,
+      }
+    case "circuit_open":
     case "unavailable":
     case "down":
-    case "circuit_open":
       return {
         label: "Unavailable",
         className: "border-red-500/40 bg-red-500/10 text-red-300",
         Icon: ServerOff,
+      }
+    case "unconfigured":
+      return {
+        label: "Unconfigured",
+        className: "border-slate-500/40 bg-slate-500/10 text-slate-300",
+        Icon: PauseCircle,
       }
     default:
       return {
@@ -105,6 +118,8 @@ function getCircuitPresentation(circuitState: string | null | undefined) {
 
 export function ProviderStatusPanel({
   providers,
+  tiEnabled,
+  generatedAt,
   isLoading = false,
   error = null,
   onRetry,
@@ -126,11 +141,31 @@ export function ProviderStatusPanel({
               Operational readiness, circuit-breaker state, and sanitized failure telemetry for configured TI providers.
             </CardDescription>
           </div>
-          {Array.isArray(providers) && providers.length > 0 && (
-            <Badge variant="outline" className="font-mono text-xs">
-              {providers.length} configured
-            </Badge>
-          )}
+          <div className="flex flex-wrap items-center gap-2">
+            {typeof tiEnabled === "boolean" && (
+              <Badge
+                variant="outline"
+                className={cn(
+                  "text-xs",
+                  tiEnabled
+                    ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+                    : "border-slate-500/40 bg-slate-500/10 text-slate-300"
+                )}
+              >
+                {tiEnabled ? "TI Enabled" : "TI Disabled"}
+              </Badge>
+            )}
+            {Array.isArray(providers) && providers.length > 0 && (
+              <Badge variant="outline" className="font-mono text-xs">
+                {providers.length} configured
+              </Badge>
+            )}
+            {generatedAt && (
+              <span className="font-mono text-[11px] text-muted-foreground">
+                Updated: {generatedAt}
+              </span>
+            )}
+          </div>
         </div>
       </CardHeader>
       <CardContent>
@@ -193,6 +228,7 @@ export function ProviderStatusPanel({
                       </p>
                       <p className="font-mono text-[11px] text-muted-foreground">
                         {provider.provider_id}
+                        {provider.provider_version ? ` v${provider.provider_version}` : ""}
                       </p>
                     </div>
                     <div className="flex flex-wrap items-center gap-1.5">
@@ -213,6 +249,14 @@ export function ProviderStatusPanel({
                     <Badge variant="outline" className="text-[11px]">
                       {provider.enabled ? "Enabled" : "Disabled"}
                     </Badge>
+                    {provider.configured === false && (
+                      <Badge
+                        variant="outline"
+                        className="border-slate-500/40 bg-slate-500/10 text-[11px] text-slate-300"
+                      >
+                        Not Configured
+                      </Badge>
+                    )}
                     {typeof provider.is_live === "boolean" && (
                       <Badge variant="outline" className="text-[11px]">
                         {provider.is_live ? "Live TI" : "Fixture / Deterministic"}
@@ -247,10 +291,40 @@ export function ProviderStatusPanel({
                         {provider.last_success_at || "—"}
                       </dd>
                     </div>
+                    {provider.last_failure_at && (
+                      <div className="flex items-center justify-between gap-2">
+                        <dt>Last Failure</dt>
+                        <dd className="font-mono text-foreground">
+                          {provider.last_failure_at}
+                        </dd>
+                      </div>
+                    )}
+                    {typeof provider.consecutive_failures === "number" && (
+                      <div className="flex items-center justify-between gap-2">
+                        <dt>Consecutive Failures</dt>
+                        <dd className="font-mono text-foreground">{provider.consecutive_failures}</dd>
+                      </div>
+                    )}
+                    {typeof provider.total_requests === "number" && (
+                      <div className="flex items-center justify-between gap-2">
+                        <dt>Total Requests / Failures</dt>
+                        <dd className="font-mono text-foreground">
+                          {provider.total_requests} / {provider.total_failures ?? 0}
+                        </dd>
+                      </div>
+                    )}
                     {typeof provider.retry_count === "number" && (
                       <div className="flex items-center justify-between gap-2">
                         <dt>Retry Attempts</dt>
                         <dd className="font-mono text-foreground">{provider.retry_count}</dd>
+                      </div>
+                    )}
+                    {typeof provider.cooldown_remaining_seconds === "number" && (
+                      <div className="flex items-center justify-between gap-2">
+                        <dt>Cooldown Window</dt>
+                        <dd className="font-mono text-foreground">
+                          {provider.cooldown_remaining_seconds}s
+                        </dd>
                       </div>
                     )}
                     {safeFailure && (
@@ -258,6 +332,14 @@ export function ProviderStatusPanel({
                         <dt>Failure Category</dt>
                         <dd className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 font-mono text-amber-300">
                           {safeFailure}
+                        </dd>
+                      </div>
+                    )}
+                    {provider.last_error_summary && (
+                      <div className="space-y-0.5 pt-0.5">
+                        <dt>Last Error Summary</dt>
+                        <dd className="rounded border border-amber-500/20 bg-background/60 px-2 py-1 font-mono text-muted-foreground">
+                          {provider.last_error_summary}
                         </dd>
                       </div>
                     )}

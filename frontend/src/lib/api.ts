@@ -22,6 +22,7 @@ import type {
   SystemInfoResponse,
   ThreatIntelContext,
   ThreatIntelProviderStatus,
+  ThreatIntelProvidersStatusResult,
 } from "@/types";
 
 // ---------------------------------------------------------------------------
@@ -315,6 +316,7 @@ export const checkSystemInfo = async (): Promise<{
 export const EVENT_INGEST_ENDPOINT = "/api/v1/events/ingest";
 export const EVENTS_LIST_ENDPOINT = "/api/v1/events/ingested";
 export const EVENTS_NORMALIZED_ENDPOINT = "/api/v1/events/normalized";
+export const TI_PROVIDERS_STATUS_ENDPOINT = "/api/v1/events/threat-intelligence/providers";
 export const DEFAULT_RECENT_EVENTS_LIMIT = 20;
 export const MAX_QUERY_LIMIT = 100;
 export const MAX_QUERY_OFFSET = 10_000;
@@ -1045,19 +1047,28 @@ export function normalizeProviderStatus(raw: unknown): ThreatIntelProviderStatus
 
   const enabled = typeof obj.enabled === "boolean" ? obj.enabled : true;
   const rawStatus =
-    typeof obj.status === "string" && obj.status.trim()
-      ? obj.status.trim().toLowerCase()
-      : enabled
-        ? "degraded"
-        : "disabled";
+    typeof obj.operational_state === "string" && obj.operational_state.trim()
+      ? obj.operational_state.trim().toLowerCase()
+      : typeof obj.status === "string" && obj.status.trim()
+        ? obj.status.trim().toLowerCase()
+        : enabled
+          ? "degraded"
+          : "disabled";
   const circuitRaw =
     typeof obj.circuit_breaker_state === "string"
       ? obj.circuit_breaker_state
       : typeof obj.circuit_state === "string"
         ? obj.circuit_state
         : null;
+  const rawFailureCategory =
+    obj.failure_category ?? obj.last_failure_category ?? obj.error_category;
+  const sanitizedFailure =
+    typeof rawFailureCategory === "string" &&
+    rawFailureCategory.trim().toLowerCase() === "none"
+      ? null
+      : sanitizeFailureCategory(rawFailureCategory);
 
-  return {
+  const mapped: ThreatIntelProviderStatus = {
     provider_id: providerId,
     provider_name:
       typeof obj.provider_name === "string"
@@ -1074,14 +1085,44 @@ export function normalizeProviderStatus(raw: unknown): ThreatIntelProviderStatus
         : typeof obj.last_successful_lookup_at === "string"
           ? obj.last_successful_lookup_at
           : null,
-    failure_category: sanitizeFailureCategory(
-      obj.failure_category ?? obj.last_failure_category ?? obj.error_category
-    ),
+    failure_category: sanitizedFailure,
     is_live: typeof obj.is_live === "boolean" ? obj.is_live : null,
-    retry_count: typeof obj.retry_count === "number" ? obj.retry_count : null,
+    retry_count:
+      typeof obj.retry_count === "number"
+        ? obj.retry_count
+        : typeof obj.total_retries === "number"
+          ? obj.total_retries
+          : null,
     retry_exhausted:
       typeof obj.retry_exhausted === "boolean" ? obj.retry_exhausted : null,
   };
+
+  if (typeof obj.provider_version === "string") {
+    mapped.provider_version = obj.provider_version;
+  }
+  if (typeof obj.configured === "boolean") {
+    mapped.configured = obj.configured;
+  }
+  if (typeof obj.consecutive_failures === "number") {
+    mapped.consecutive_failures = obj.consecutive_failures;
+  }
+  if (typeof obj.total_requests === "number") {
+    mapped.total_requests = obj.total_requests;
+  }
+  if (typeof obj.total_failures === "number") {
+    mapped.total_failures = obj.total_failures;
+  }
+  if (typeof obj.last_failure_at === "string") {
+    mapped.last_failure_at = obj.last_failure_at;
+  }
+  if (typeof obj.cooldown_remaining_seconds === "number") {
+    mapped.cooldown_remaining_seconds = obj.cooldown_remaining_seconds;
+  }
+  if (typeof obj.last_error_summary === "string") {
+    mapped.last_error_summary = sanitizeFailureCategory(obj.last_error_summary);
+  }
+
+  return mapped;
 }
 
 /** Normalizes either an array or `{ providers: [...] }` envelope into safe operational records. */
@@ -1096,3 +1137,40 @@ export function normalizeProviderStatusList(raw: unknown): ThreatIntelProviderSt
     .map((entry) => normalizeProviderStatus(entry))
     .filter((entry): entry is ThreatIntelProviderStatus => entry !== null);
 }
+
+/**
+ * Fetches Threat Intelligence provider operational diagnostics from
+ * GET /api/v1/events/threat-intelligence/providers.
+ * Returns `{ supported: false, providers: [] }` cleanly if the endpoint returns 404/501.
+ */
+export const fetchThreatIntelProvidersStatus =
+  async (): Promise<ThreatIntelProvidersStatusResult> => {
+    try {
+      const res = await ApiClient.get<Record<string, unknown> | unknown[]>(
+        TI_PROVIDERS_STATUS_ENDPOINT,
+        { cache: "no-store" }
+      );
+      if (!res || (typeof res !== "object" && !Array.isArray(res))) {
+        throw new Error("Malformed response from TI provider status endpoint");
+      }
+      const obj = !Array.isArray(res) ? res : null;
+      if (obj && !Array.isArray(obj.providers)) {
+        throw new Error("Malformed response from TI provider status endpoint");
+      }
+      return {
+        supported: true,
+        ti_enabled: typeof obj?.ti_enabled === "boolean" ? obj.ti_enabled : undefined,
+        policy:
+          obj?.policy && typeof obj.policy === "object" && !Array.isArray(obj.policy)
+            ? (obj.policy as Record<string, unknown>)
+            : null,
+        providers: normalizeProviderStatusList(res),
+        generated_at: typeof obj?.generated_at === "string" ? obj.generated_at : null,
+      };
+    } catch (error) {
+      if (error instanceof ApiError && (error.status === 404 || error.status === 501)) {
+        return { supported: false, providers: [] };
+      }
+      throw error;
+    }
+  };

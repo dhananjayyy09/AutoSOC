@@ -2,6 +2,7 @@
 
 import * as React from "react"
 import { PageContainer } from "@/components/layout/page-container"
+import { useApiRequest } from "@/hooks/use-api-request"
 import {
   EVENTS_CONFIG,
   EventIngestionForm,
@@ -15,10 +16,15 @@ import {
   ApiError,
   fetchNormalizedEventById,
   fetchNormalizedEvents,
+  fetchThreatIntelProvidersStatus,
   isNetworkError,
   retryNormalizedEventEnrichment,
 } from "@/lib/api"
-import type { IngestedEventRecord, NormalizedSecurityEvent } from "@/types"
+import type {
+  IngestedEventRecord,
+  NormalizedSecurityEvent,
+  ThreatIntelProvidersStatusResult,
+} from "@/types"
 
 export default function EventsPage() {
   const [refreshTrigger, setRefreshTrigger] = React.useState(0)
@@ -29,6 +35,17 @@ export default function EventsPage() {
   const [isRetryingEnrichment, setIsRetryingEnrichment] = React.useState(false)
   const [retryEnrichmentError, setRetryEnrichmentError] = React.useState<string | null>(null)
   const requestCounterRef = React.useRef(0)
+
+  const {
+    status: providersRequestStatus,
+    data: providersData,
+    error: providersError,
+    execute: executeProvidersStatus,
+  } = useApiRequest<ThreatIntelProvidersStatusResult>(fetchThreatIntelProvidersStatus)
+
+  React.useEffect(() => {
+    void executeProvidersStatus()
+  }, [executeProvidersStatus, refreshTrigger])
 
   const loadNormalizedForEvent = React.useCallback(async (evt: IngestedEventRecord | null) => {
     const requestId = ++requestCounterRef.current
@@ -145,6 +162,7 @@ export default function EventsPage() {
           enrichment: updatedEnrichment,
         }
       })
+      void executeProvidersStatus()
     } catch (err) {
       if (err instanceof ApiError) {
         setRetryEnrichmentError(err.userMessage)
@@ -156,7 +174,7 @@ export default function EventsPage() {
     } finally {
       setIsRetryingEnrichment(false)
     }
-  }, [])
+  }, [executeProvidersStatus])
 
   return (
     <PageContainer
@@ -202,7 +220,23 @@ export default function EventsPage() {
           retryEnrichmentError={retryEnrichmentError}
         />
 
-        <ProviderStatusPanel backendSupported={false} />
+        <ProviderStatusPanel
+          providers={providersData?.supported ? providersData.providers : undefined}
+          tiEnabled={typeof providersData?.ti_enabled === "boolean" ? providersData.ti_enabled : null}
+          generatedAt={providersData?.generated_at ?? null}
+          isLoading={providersRequestStatus === "loading"}
+          error={providersError}
+          backendSupported={
+            providersData
+              ? providersData.supported
+              : providersError
+                ? true
+                : undefined
+          }
+          onRetry={() => {
+            void executeProvidersStatus()
+          }}
+        />
       </div>
     </PageContainer>
   )

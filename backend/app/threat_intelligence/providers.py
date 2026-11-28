@@ -326,10 +326,6 @@ _BEARER_HEADER_RE = re.compile(r"(?i)(bearer|apikey|x-apikey|key)\s*[:=]\s*[^\s,
 class ThreatIntelProviderUnavailableError(RuntimeError):
     """Raised cleanly when an external TI provider returns HTTP 401/403/5xx or transport failure."""
 
-
-class ThreatIntelProviderRateLimitedError(ThreatIntelProviderUnavailableError):
-    """Raised cleanly when an external TI provider returns HTTP 429 rate-limiting."""
-
     def __init__(
         self,
         message: str,
@@ -342,6 +338,25 @@ class ThreatIntelProviderRateLimitedError(ThreatIntelProviderUnavailableError):
         self.retryable = retryable
         self.retry_after_seconds = retry_after_seconds
         self.rate_limited = rate_limited
+
+
+class ThreatIntelProviderRateLimitedError(ThreatIntelProviderUnavailableError):
+    """Raised cleanly when an external TI provider returns HTTP 429 rate-limiting."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool = True,
+        retry_after_seconds: Optional[float] = None,
+        rate_limited: bool = True,
+    ) -> None:
+        super().__init__(
+            message,
+            retryable=retryable,
+            retry_after_seconds=retry_after_seconds,
+            rate_limited=rate_limited,
+        )
 
 
 def _parse_retry_after(headers: Any) -> Optional[float]:
@@ -361,7 +376,7 @@ def _parse_retry_after(headers: Any) -> Optional[float]:
 
 
 def _raise_for_http_unavailable(provider_label: str, resp: Any) -> None:
-    """Raise ThreatIntelProviderUnavailableError with rate-limit/retryability metadata."""
+    """Raise ThreatIntelProviderUnavailableError / RateLimitedError with metadata."""
     status_code = int(resp.status_code)
     if status_code in (401, 403):
         raise ThreatIntelProviderUnavailableError(
@@ -370,8 +385,8 @@ def _raise_for_http_unavailable(provider_label: str, resp: Any) -> None:
             rate_limited=False,
         )
     if status_code == 429:
-        raise ThreatIntelProviderUnavailableError(
-            f"{provider_label} HTTP 429 rate limit",
+        raise ThreatIntelProviderRateLimitedError(
+            f"{provider_label} HTTP 429 rate limit exceeded",
             retryable=True,
             retry_after_seconds=_parse_retry_after(getattr(resp, "headers", None)),
             rate_limited=True,
@@ -514,19 +529,8 @@ class VirusTotalProvider:
                 "live_lookup_performed": True,
             }
 
-<<<<<<< HEAD
         if resp.status_code in (401, 403, 429) or resp.status_code >= 500:
             _raise_for_http_unavailable("VirusTotal", resp)
-=======
-        if resp.status_code == 429:
-            raise ThreatIntelProviderRateLimitedError(
-                "VirusTotal HTTP 429 rate limit exceeded"
-            )
-        if resp.status_code in (401, 403) or resp.status_code >= 500:
-            raise ThreatIntelProviderUnavailableError(
-                f"VirusTotal HTTP {resp.status_code} response"
-            )
->>>>>>> origin/feature/pranjal/day11
         if resp.status_code >= 400:
             return {
                 "provider": self.provider_id,
@@ -624,19 +628,8 @@ class AbuseIPDBProvider:
         async with httpx.AsyncClient(timeout=request.timeout_seconds, follow_redirects=False) as client:
             resp = await client.get(f"{self._base_url}/check", headers=headers, params=params)
 
-<<<<<<< HEAD
         if resp.status_code in (401, 403, 429) or resp.status_code >= 500:
             _raise_for_http_unavailable("AbuseIPDB", resp)
-=======
-        if resp.status_code == 429:
-            raise ThreatIntelProviderRateLimitedError(
-                "AbuseIPDB HTTP 429 rate limit exceeded"
-            )
-        if resp.status_code in (401, 403) or resp.status_code >= 500:
-            raise ThreatIntelProviderUnavailableError(
-                f"AbuseIPDB HTTP {resp.status_code} response"
-            )
->>>>>>> origin/feature/pranjal/day11
         if resp.status_code >= 400:
             return {
                 "provider": self.provider_id,
@@ -754,19 +747,8 @@ class GenericHTTPThreatIntelProvider:
                 "lookup_timestamp": _utc_now_iso(),
                 "live_lookup_performed": True,
             }
-<<<<<<< HEAD
         if resp.status_code in (401, 403, 429) or resp.status_code >= 500:
             _raise_for_http_unavailable("Generic TI gateway", resp)
-=======
-        if resp.status_code == 429:
-            raise ThreatIntelProviderRateLimitedError(
-                "Generic TI gateway HTTP 429 rate limit exceeded"
-            )
-        if resp.status_code in (401, 403) or resp.status_code >= 500:
-            raise ThreatIntelProviderUnavailableError(
-                f"Generic TI gateway HTTP {resp.status_code} response"
-            )
->>>>>>> origin/feature/pranjal/day11
 
         data = resp.json()
         if not isinstance(data, dict):

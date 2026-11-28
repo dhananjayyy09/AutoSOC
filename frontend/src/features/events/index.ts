@@ -19,12 +19,14 @@ export {
   fetchNormalizedEventById,
   fetchNormalizedEventEnrichment,
   retryNormalizedEventEnrichment,
+  fetchThreatIntelProvidersStatus,
   sanitizeFailureCategory,
   normalizeProviderStatus,
   normalizeProviderStatusList,
   EVENT_INGEST_ENDPOINT,
   EVENTS_LIST_ENDPOINT,
   EVENTS_NORMALIZED_ENDPOINT,
+  TI_PROVIDERS_STATUS_ENDPOINT,
   DEFAULT_RECENT_EVENTS_LIMIT,
   MAX_QUERY_LIMIT,
   MAX_QUERY_OFFSET,
@@ -61,6 +63,7 @@ export type {
   ThreatIntelProviderHealthStatus,
   ThreatIntelCircuitState,
   ThreatIntelProviderStatus,
+  ThreatIntelProvidersStatusResult,
 } from "@/types";
 
 export const EVENTS_CONFIG = {
