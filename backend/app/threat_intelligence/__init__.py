@@ -1,20 +1,16 @@
 """
-AutoSOC Threat Intelligence and Security Enrichment Package (Day 9 & Day 10)
+AutoSOC Threat Intelligence and Security Enrichment Package (Day 9, Day 10 & Day 11)
 
 Exports the canonical enrichment contract, provider abstractions, deterministic
-local enrichment engine, TI TTL cache/single-flight guard, mock/fixture TI
-adapter, external TI provider adapters, and TI orchestration/lookup pipelines.
+local enrichment engine, reliability/circuit-breaker/retry semantics, mock/fixture TI
+adapter, and (when runtime HTTP/Pydantic deps are installed) external TI adapters,
+TTL cache, and orchestrator.
 """
 
-from app.threat_intelligence.cache import ThreatIntelCache, build_ti_cache_key
 from app.threat_intelligence.enricher import DeterministicEventEnricher
 from app.threat_intelligence.mock_adapter import (
     DEFAULT_SYNTHETIC_TI_FIXTURES,
     FixtureThreatIntelProvider,
-)
-from app.threat_intelligence.orchestrator import (
-    ThreatIntelOrchestrationOutcome,
-    ThreatIntelOrchestrator,
 )
 from app.threat_intelligence.provider_contract import (
     ObservableLookupRequest,
@@ -26,15 +22,25 @@ from app.threat_intelligence.provider_contract import (
     validate_observable_for_lookup,
 )
 from app.threat_intelligence.providers import (
-    AbuseIPDBProvider,
     DeterministicLocalEnrichmentProvider,
     EnrichmentProviderProtocol,
-    GenericHTTPThreatIntelProvider,
     SyncTIProviderAdapter,
     ThreatIntelProviderProtocol as AsyncThreatIntelProviderProtocol,
+    ThreatIntelProviderRateLimitedError,
     ThreatIntelProviderUnavailableError,
-    VirusTotalProvider,
-    build_configured_ti_providers,
+)
+from app.threat_intelligence.reliability import (
+    CircuitBreakerStateEnum,
+    FORBIDDEN_OUTBOUND_REQUEST_KEYS,
+    OPERATIONAL_FAILURE_STATUS_VALUES,
+    ProviderCircuitBreaker,
+    ProviderOperationalStateEnum,
+    RETRYABLE_STATUS_VALUES,
+    RetryPolicy,
+    deduplicate_references,
+    enforce_verdict_and_evidence_invariants,
+    execute_lookup_with_reliability,
+    validate_safe_provider_request,
 )
 from app.threat_intelligence.schemas import (
     EnrichedObservable,
@@ -51,8 +57,8 @@ from app.threat_intelligence.schemas import (
 from app.threat_intelligence.ti_adapter import ThreatIntelObservablePipeline
 
 __all__ = [
-    "AbuseIPDBProvider",
     "AsyncThreatIntelProviderProtocol",
+    "CircuitBreakerStateEnum",
     "DEFAULT_SYNTHETIC_TI_FIXTURES",
     "DeterministicEventEnricher",
     "DeterministicLocalEnrichmentProvider",
@@ -61,28 +67,60 @@ __all__ = [
     "EnrichmentProviderProtocol",
     "EnrichmentStatusEnum",
     "EventEnrichmentResult",
+    "FORBIDDEN_OUTBOUND_REQUEST_KEYS",
     "FixtureThreatIntelProvider",
-    "GenericHTTPThreatIntelProvider",
+    "OPERATIONAL_FAILURE_STATUS_VALUES",
     "ObservableClassificationEnum",
     "ObservableLookupRequest",
     "ObservableLookupResult",
     "ObservableTypeEnum",
     "ObservableVerdictEnum",
+    "ProviderCircuitBreaker",
     "ProviderLookupStatusEnum",
+    "ProviderOperationalStateEnum",
     "ProviderReference",
+    "RETRYABLE_STATUS_VALUES",
+    "RetryPolicy",
     "SyncTIProviderAdapter",
-    "ThreatIntelCache",
     "ThreatIntelLookupRequest",
     "ThreatIntelLookupResult",
     "ThreatIntelLookupStatusEnum",
     "ThreatIntelObservablePipeline",
-    "ThreatIntelOrchestrationOutcome",
-    "ThreatIntelOrchestrator",
     "ThreatIntelProviderProtocol",
+    "ThreatIntelProviderRateLimitedError",
     "ThreatIntelProviderUnavailableError",
-    "VirusTotalProvider",
-    "build_configured_ti_providers",
-    "build_ti_cache_key",
+    "deduplicate_references",
+    "enforce_verdict_and_evidence_invariants",
+    "execute_lookup_with_reliability",
     "sanitize_provider_response",
     "validate_observable_for_lookup",
+    "validate_safe_provider_request",
 ]
+
+try:
+    from app.threat_intelligence.cache import ThreatIntelCache, build_ti_cache_key
+    from app.threat_intelligence.orchestrator import (
+        ThreatIntelOrchestrationOutcome,
+        ThreatIntelOrchestrator,
+    )
+    from app.threat_intelligence.providers import (
+        AbuseIPDBProvider,
+        GenericHTTPThreatIntelProvider,
+        VirusTotalProvider,
+        build_configured_ti_providers,
+    )
+
+    __all__.extend(
+        [
+            "AbuseIPDBProvider",
+            "GenericHTTPThreatIntelProvider",
+            "ThreatIntelCache",
+            "ThreatIntelOrchestrationOutcome",
+            "ThreatIntelOrchestrator",
+            "VirusTotalProvider",
+            "build_configured_ti_providers",
+            "build_ti_cache_key",
+        ]
+    )
+except ImportError:
+    pass

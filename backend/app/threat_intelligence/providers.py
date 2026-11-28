@@ -13,8 +13,17 @@ import re
 from typing import Any, Dict, FrozenSet, List, Optional, Protocol, Sequence, Tuple, runtime_checkable
 from urllib.parse import urlsplit
 
-import httpx
-from pydantic import SecretStr
+from app.events.schemas import PYDANTIC_V2
+
+try:
+    import httpx
+except ImportError:
+    httpx = None  # type: ignore[assignment]
+
+if PYDANTIC_V2:
+    from pydantic import SecretStr
+else:
+    SecretStr = None  # type: ignore[assignment,misc]
 
 from app.threat_intelligence.schemas import (
     EnrichedObservable,
@@ -315,7 +324,11 @@ _BEARER_HEADER_RE = re.compile(r"(?i)(bearer|apikey|x-apikey|key)\s*[:=]\s*[^\s,
 
 
 class ThreatIntelProviderUnavailableError(RuntimeError):
-    """Raised cleanly when an external TI provider returns HTTP 401/403/429/5xx or transport failure."""
+    """Raised cleanly when an external TI provider returns HTTP 401/403/5xx or transport failure."""
+
+
+class ThreatIntelProviderRateLimitedError(ThreatIntelProviderUnavailableError):
+    """Raised cleanly when an external TI provider returns HTTP 429 rate-limiting."""
 
 
 def _utc_now_iso() -> str:
@@ -337,7 +350,7 @@ def scrub_secrets(text: Optional[str], secrets: Sequence[Optional[str]] = ()) ->
 def _unwrap_secret(secret: Optional[Any]) -> Optional[str]:
     if secret is None:
         return None
-    if isinstance(secret, SecretStr):
+    if SecretStr is not None and isinstance(secret, SecretStr):
         val = secret.get_secret_value().strip()
         return val or None
     if isinstance(secret, str):
@@ -447,7 +460,11 @@ class VirusTotalProvider:
                 "live_lookup_performed": True,
             }
 
-        if resp.status_code in (401, 403, 429) or resp.status_code >= 500:
+        if resp.status_code == 429:
+            raise ThreatIntelProviderRateLimitedError(
+                "VirusTotal HTTP 429 rate limit exceeded"
+            )
+        if resp.status_code in (401, 403) or resp.status_code >= 500:
             raise ThreatIntelProviderUnavailableError(
                 f"VirusTotal HTTP {resp.status_code} response"
             )
@@ -548,7 +565,11 @@ class AbuseIPDBProvider:
         async with httpx.AsyncClient(timeout=request.timeout_seconds, follow_redirects=False) as client:
             resp = await client.get(f"{self._base_url}/check", headers=headers, params=params)
 
-        if resp.status_code in (401, 403, 429) or resp.status_code >= 500:
+        if resp.status_code == 429:
+            raise ThreatIntelProviderRateLimitedError(
+                "AbuseIPDB HTTP 429 rate limit exceeded"
+            )
+        if resp.status_code in (401, 403) or resp.status_code >= 500:
             raise ThreatIntelProviderUnavailableError(
                 f"AbuseIPDB HTTP {resp.status_code} response"
             )
@@ -669,7 +690,11 @@ class GenericHTTPThreatIntelProvider:
                 "lookup_timestamp": _utc_now_iso(),
                 "live_lookup_performed": True,
             }
-        if resp.status_code in (401, 403, 429) or resp.status_code >= 500:
+        if resp.status_code == 429:
+            raise ThreatIntelProviderRateLimitedError(
+                "Generic TI gateway HTTP 429 rate limit exceeded"
+            )
+        if resp.status_code in (401, 403) or resp.status_code >= 500:
             raise ThreatIntelProviderUnavailableError(
                 f"Generic TI gateway HTTP {resp.status_code} response"
             )
@@ -743,6 +768,9 @@ class SyncTIProviderAdapter:
     def is_configured(self) -> bool:
         return True
 
+    def is_enabled(self) -> bool:
+        return bool(getattr(self._sync_provider, "is_enabled", True))
+
     async def lookup(self, request: ThreatIntelLookupRequest) -> Dict[str, Any]:
         from app.threat_intelligence.provider_contract import (
             ObservableLookupRequest,
@@ -761,6 +789,11 @@ class SyncTIProviderAdapter:
             ProviderLookupStatusEnum.NO_RESULT: ThreatIntelLookupStatusEnum.NO_DATA,
             ProviderLookupStatusEnum.TIMEOUT: ThreatIntelLookupStatusEnum.TIMEOUT,
             ProviderLookupStatusEnum.UNAVAILABLE: ThreatIntelLookupStatusEnum.UNAVAILABLE,
+            ProviderLookupStatusEnum.RATE_LIMITED: ThreatIntelLookupStatusEnum.RATE_LIMITED,
+            ProviderLookupStatusEnum.RETRY_EXHAUSTED: ThreatIntelLookupStatusEnum.RETRY_EXHAUSTED,
+            ProviderLookupStatusEnum.CIRCUIT_OPEN: ThreatIntelLookupStatusEnum.CIRCUIT_OPEN,
+            ProviderLookupStatusEnum.PROVIDER_DISABLED: ThreatIntelLookupStatusEnum.PROVIDER_DISABLED,
+            ProviderLookupStatusEnum.INVALID_OBSERVABLE: ThreatIntelLookupStatusEnum.INVALID_OBSERVABLE,
             ProviderLookupStatusEnum.MALFORMED_RESPONSE: ThreatIntelLookupStatusEnum.INVALID_RESPONSE,
             ProviderLookupStatusEnum.FAILED: ThreatIntelLookupStatusEnum.INVALID_RESPONSE,
             ProviderLookupStatusEnum.UNSUPPORTED_OBSERVABLE: ThreatIntelLookupStatusEnum.UNSUPPORTED,

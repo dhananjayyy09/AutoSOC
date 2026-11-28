@@ -122,6 +122,7 @@ DEFAULT_SYNTHETIC_TI_FIXTURES: Dict[Tuple[str, str], Dict[str, Any]] = {
     # Controlled failure-simulation fixtures for deterministic error handling tests
     ("ip", "203.0.113.250"): {"mode": "timeout"},
     ("ip", "203.0.113.251"): {"mode": "unavailable"},
+    ("ip", "203.0.113.252"): {"mode": "rate_limited"},
     ("domain", "malformed-resp.example.invalid"): {
         "mode": "malformed_response",
         "raw_response": {"verdict": "invented_bad_verdict", "confidence": 42},
@@ -133,7 +134,8 @@ class FixtureThreatIntelProvider:
     """
     Deterministic mock/fixture-based TI provider implementing ThreatIntelProviderProtocol.
     Makes zero network calls (`is_live_lookup=False`) and supports controlled simulation
-    of found, no_result, unsupported_observable, unavailable, timeout, and malformed_response.
+    of found, no_result, unsupported_observable, invalid_observable, unavailable,
+    timeout, rate_limited, malformed_response, provider_disabled, and transient sequences.
     """
 
     def __init__(
@@ -144,6 +146,7 @@ class FixtureThreatIntelProvider:
         fixtures: Optional[Dict[Tuple[str, str], Dict[str, Any]]] = None,
         supported_types: Optional[FrozenSet[ObservableTypeEnum]] = None,
         force_status: Optional[ProviderLookupStatusEnum] = None,
+        enabled: bool = True,
     ) -> None:
         self._provider_name = provider_name
         self._provider_version = provider_version
@@ -154,6 +157,12 @@ class FixtureThreatIntelProvider:
             supported_types if supported_types is not None else ALL_SUPPORTED_OBSERVABLES
         )
         self._force_status = force_status
+        self._enabled = bool(enabled)
+        self._attempt_counts: Dict[Tuple[str, str], int] = {}
+
+    @property
+    def is_enabled(self) -> bool:
+        return self._enabled
 
     @property
     def provider_name(self) -> str:
@@ -179,6 +188,29 @@ class FixtureThreatIntelProvider:
     ) -> ObservableLookupResult:
         ts = lookup_timestamp or utc_now_iso()
 
+        if not self._enabled:
+            return ObservableLookupResult(
+                provider_name=self._provider_name,
+                provider_version=self._provider_version,
+                observable_type=ObservableTypeEnum.IP,
+                normalized_value="",
+                lookup_status=ProviderLookupStatusEnum.PROVIDER_DISABLED,
+                verdict=ObservableVerdictEnum.UNKNOWN,
+                confidence=None,
+                evidence={},
+                references=[],
+                lookup_timestamp=ts,
+                warnings=[
+                    ValidationIssue(
+                        category=ValidationErrorCategory.UNSUPPORTED_SOURCE_TYPE,
+                        field="provider",
+                        message=f"Provider '{self._provider_name}' is disabled",
+                        severity="warning",
+                    )
+                ],
+                live_lookup_performed=False,
+            )
+
         is_valid, obs_type, canonical_val, err_msg = validate_observable_for_lookup(
             request.observable_type, request.normalized_value
         )
@@ -189,7 +221,7 @@ class FixtureThreatIntelProvider:
                 provider_version=self._provider_version,
                 observable_type=safe_type,
                 normalized_value="",
-                lookup_status=ProviderLookupStatusEnum.FAILED
+                lookup_status=ProviderLookupStatusEnum.INVALID_OBSERVABLE
                 if obs_type is not None
                 else ProviderLookupStatusEnum.UNSUPPORTED_OBSERVABLE,
                 verdict=ObservableVerdictEnum.UNKNOWN,
@@ -249,6 +281,14 @@ class FixtureThreatIntelProvider:
                 ProviderLookupStatusEnum.TIMEOUT,
                 f"Provider '{self._provider_name}' lookup timed out",
             )
+        if self._force_status == ProviderLookupStatusEnum.RATE_LIMITED:
+            return self._error_result(
+                obs_type,
+                canonical_val,
+                ts,
+                ProviderLookupStatusEnum.RATE_LIMITED,
+                f"Provider '{self._provider_name}' rate limit exceeded (HTTP 429 simulation)",
+            )
 
         entry = self._fixtures.get((obs_type.value, canonical_val))
         if entry is None:
@@ -268,7 +308,19 @@ class FixtureThreatIntelProvider:
                 live_lookup_performed=False,
             )
 
-        mode = entry.get("mode")
+        # Support deterministic transient-failure sequences before recovering to final entry
+        transient_seq = entry.get("transient_failures")
+        if isinstance(transient_seq, list) and transient_seq:
+            key = (obs_type.value, canonical_val)
+            idx = self._attempt_counts.get(key, 0)
+            self._attempt_counts[key] = idx + 1
+            if idx < len(transient_seq):
+                mode = str(transient_seq[idx]).strip().lower()
+            else:
+                mode = entry.get("mode")
+        else:
+            mode = entry.get("mode")
+
         if mode == "unavailable":
             return self._error_result(
                 obs_type,
@@ -284,6 +336,14 @@ class FixtureThreatIntelProvider:
                 ts,
                 ProviderLookupStatusEnum.TIMEOUT,
                 f"Provider '{self._provider_name}' lookup timed out",
+            )
+        if mode == "rate_limited":
+            return self._error_result(
+                obs_type,
+                canonical_val,
+                ts,
+                ProviderLookupStatusEnum.RATE_LIMITED,
+                f"Provider '{self._provider_name}' rate limit exceeded (HTTP 429 simulation)",
             )
         if mode == "malformed_response":
             return sanitize_provider_response(

@@ -124,7 +124,7 @@ class TestObservableValidationAndUnsupportedTypes(unittest.TestCase):
 
             results = pipeline.lookup_observable(obs_type, bad_val)
             self.assertEqual(len(results), 1)
-            self.assertEqual(results[0].lookup_status, ProviderLookupStatusEnum.FAILED)
+            self.assertEqual(results[0].lookup_status, ProviderLookupStatusEnum.INVALID_OBSERVABLE)
             self.assertEqual(results[0].verdict, ObservableVerdictEnum.UNKNOWN)
             self.assertIsNone(results[0].confidence)
 
@@ -296,11 +296,23 @@ class TestPipelineNormalizationPartialAndNetworkIsolation(unittest.TestCase):
     def test_conflicting_providers_resolve_conservatively_to_unknown(self):
         p_mal = FixtureThreatIntelProvider(
             provider_name="mock_a",
-            fixtures={("ip", "203.0.113.99"): {"verdict": "malicious", "confidence": 0.9}},
+            fixtures={
+                ("ip", "203.0.113.99"): {
+                    "verdict": "malicious",
+                    "confidence": 0.9,
+                    "evidence": {"fixture_id": "CONFLICT-MAL"},
+                }
+            },
         )
         p_benign = FixtureThreatIntelProvider(
             provider_name="mock_b",
-            fixtures={("ip", "203.0.113.99"): {"verdict": "benign", "confidence": 0.95}},
+            fixtures={
+                ("ip", "203.0.113.99"): {
+                    "verdict": "benign",
+                    "confidence": 0.95,
+                    "evidence": {"fixture_id": "CONFLICT-BENIGN"},
+                }
+            },
         )
         pipeline = ThreatIntelObservablePipeline(ti_providers=[p_mal, p_benign])
         ev = _make_event(source_ip="203.0.113.99")
