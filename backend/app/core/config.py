@@ -9,6 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 logger = logging.getLogger("autosoc")
 
 _TI_PROVIDER_NAME_RE = re.compile(r"^[a-zA-Z0-9_.-]{1,64}$")
+_SUPPORTED_LLM_PROVIDERS = frozenset({"ollama", "fixture"})
 
 
 class Settings(BaseSettings):
@@ -74,6 +75,52 @@ class Settings(BaseSettings):
     TI_OTX_API_KEY: Optional[SecretStr] = None
     TI_GENERIC_API_KEY: Optional[SecretStr] = None
     TI_GENERIC_BASE_URL: Optional[str] = None
+
+    # Local LLM Foundation (Day 12 - disabled by default; local Ollama runtime)
+    LLM_ENABLED: bool = False
+    LLM_PROVIDER: str = "ollama"
+    LLM_MODEL: str = ""
+    LLM_BASE_URL: Optional[str] = "http://localhost:11434"
+    LLM_TIMEOUT_SECONDS: float = Field(default=30.0, gt=0.0, le=300.0)
+    LLM_MAX_TOKENS: int = Field(default=512, ge=1, le=32768)
+    LLM_TEMPERATURE: float = Field(default=0.1, ge=0.0, le=2.0)
+
+    @field_validator("LLM_PROVIDER")
+    @classmethod
+    def validate_llm_provider(cls, value: str) -> str:
+        normalized = str(value or "").strip().lower()
+        if normalized not in _SUPPORTED_LLM_PROVIDERS:
+            raise ValueError(
+                f"Unsupported LLM_PROVIDER {value!r}; allowed providers: {sorted(_SUPPORTED_LLM_PROVIDERS)}"
+            )
+        return normalized
+
+    @field_validator("LLM_MODEL")
+    @classmethod
+    def validate_llm_model(cls, value: str) -> str:
+        cleaned = str(value or "").strip()
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in cleaned):
+            raise ValueError("LLM_MODEL must not contain control characters")
+        if len(cleaned) > 128:
+            raise ValueError("LLM_MODEL must not exceed 128 characters")
+        return cleaned
+
+    @field_validator("LLM_BASE_URL")
+    @classmethod
+    def validate_llm_base_url(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            return None
+        parsed = urlsplit(stripped)
+        if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
+            raise ValueError("LLM_BASE_URL must be an http or https URL with host")
+        if parsed.username or parsed.password:
+            raise ValueError("LLM_BASE_URL must not embed URL credentials")
+        if parsed.query or parsed.fragment:
+            raise ValueError("LLM_BASE_URL must not contain query parameters or fragments")
+        return f"{parsed.scheme.lower()}://{parsed.netloc}{parsed.path}".rstrip("/")
 
     @property
     def enabled_ti_providers(self) -> List[str]:

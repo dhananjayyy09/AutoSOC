@@ -47,8 +47,7 @@ export interface HealthCheckResponse {
   service: string;
 }
 
-/**
- * System information response shape (GET /api/v1/system/info).
+/** System information response shape (GET /api/v1/system/info).
  * Authoritative response contract from AutoSOC API v1 system endpoint.
  */
 export interface SystemInfoResponse {
@@ -56,6 +55,36 @@ export interface SystemInfoResponse {
   version: string;
   api_version: string;
   environment: string;
+}
+
+// ---------------------------------------------------------------------------
+// AI / LLM Provider Operational Status Contracts (Day 12)
+// Provisional isolated contract pending DJ's Day 12 backend status route/schema.
+// ---------------------------------------------------------------------------
+
+/** Operational readiness states for the configured AI/LLM provider. */
+export type AiProviderOperationalState =
+  | "disabled"
+  | "unconfigured"
+  | "ready"
+  | "unavailable"
+  | "error";
+
+/** Sanitized operational metadata for the configured AI/LLM provider. */
+export interface AiProviderStatus {
+  provider: string | null;
+  model: string | null;
+  status: AiProviderOperationalState;
+  enabled: boolean | null;
+  configured: boolean | null;
+  message: string | null;
+  checked_at: string | null;
+}
+
+/** Envelope separating unsupported (404/501) Day 12 endpoint responses from errors. */
+export interface AiProviderStatusResult {
+  supported: boolean;
+  data?: AiProviderStatus;
 }
 
 /** Generic API response wrapper for future paginated or enveloped endpoints. */
