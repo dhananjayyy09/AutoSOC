@@ -29,12 +29,30 @@ import type {
 } from "@/types";
 
 // ---------------------------------------------------------------------------
-// Base URL resolution – strip trailing slash exactly once at startup
+// Base URL resolution – validate protocol, strip credentials and trailing slash
 // ---------------------------------------------------------------------------
-const getBaseUrl = (): string => {
-  const envUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
-  return envUrl.replace(/\/+$/, "");
+const DEFAULT_API_BASE_URL = "http://localhost:8000";
+
+export const resolveApiBaseUrl = (rawUrl = process.env.NEXT_PUBLIC_API_BASE_URL): string => {
+  const trimmed = typeof rawUrl === "string" ? rawUrl.trim() : "";
+  if (!trimmed) {
+    return DEFAULT_API_BASE_URL;
+  }
+
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return DEFAULT_API_BASE_URL;
+    }
+    parsed.username = "";
+    parsed.password = "";
+    return parsed.toString().replace(/\/+$/, "");
+  } catch {
+    return DEFAULT_API_BASE_URL;
+  }
 };
+
+const getBaseUrl = (): string => resolveApiBaseUrl();
 
 export const API_BASE_URL = getBaseUrl();
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -220,6 +238,14 @@ export const checkHealth = async (): Promise<{
 }> => {
   try {
     const res = await ApiClient.get<HealthCheckResponse>("/health", { cache: "no-store" });
+    if (
+      !res ||
+      typeof res !== "object" ||
+      typeof res.status !== "string" ||
+      res.status.trim().toLowerCase() !== "ok"
+    ) {
+      return { status: "unavailable", error: new Error("Invalid /health response") };
+    }
     return { status: "connected", data: res };
   } catch (error) {
     return { status: "unavailable", error };
