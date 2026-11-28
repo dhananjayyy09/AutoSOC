@@ -810,9 +810,9 @@ def test_conflicting_providers_resolve_to_unknown_in_orchestrator():
     asyncio.run(_run())
 
 
-def test_fixture_provider_integration_all_scenarios_e2e_postgres(live_postgres_day10):
+def _run_fixture_scenarios_a_to_h(sensor_prefix: str) -> None:
     """
-    End-to-end PostgreSQL + API verification across Scenarios A-H using
+    Execute Scenarios A-H end-to-end through FastAPI endpoints using
     Pranjal's FixtureThreatIntelProvider bridged into DJ's unified orchestrator.
     """
     from app.threat_intelligence import build_configured_ti_providers
@@ -832,7 +832,7 @@ def test_fixture_provider_integration_all_scenarios_e2e_postgres(live_postgres_d
             json={
                 "ingestion_id": str(uuid4()),
                 "source_type": "suricata",
-                "sensor_id": f"{_PG_DAY10_PREFIX}{sensor_suffix}",
+                "sensor_id": f"{sensor_prefix}{sensor_suffix}",
                 "ingest_time": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 "raw_hash": compute_raw_hash(raw_payload),
                 "raw_payload": raw_payload,
@@ -840,7 +840,7 @@ def test_fixture_provider_integration_all_scenarios_e2e_postgres(live_postgres_d
         )
 
     with patch("app.api.v1.endpoints.events._default_enrichment_service", service):
-        # Scenario A: Successful fixture lookup (203.0.113.99 malicious + domain benign, mock never sets live_lookup_performed)
+        # Scenario A & H: Successful fixture lookup + Day 9 network/indicator context preserved
         r_a = _post_suricata(
             "scen-a",
             {
@@ -858,7 +858,10 @@ def test_fixture_provider_integration_all_scenarios_e2e_postgres(live_postgres_d
         eid_a = r_a.json()["event_id"]
 
         norm_a = client.get(f"/api/v1/events/normalized/{eid_a}").json()
+        assert "raw_payload" not in norm_a and "raw_event" not in norm_a
         assert norm_a["enrichment"]["live_lookup_performed"] is False
+        assert norm_a["enrichment"]["context"]["network"]["dst_port_well_known"] is True
+        assert norm_a["enrichment"]["context"]["indicators"]["domain_tld"] == "invalid"
         ti_a = norm_a["enrichment"]["context"]["threat_intel"]
         assert ti_a["provider"] == "autosoc.mock_ti_fixture"
         assert ti_a["live_lookup_performed"] is False
@@ -893,9 +896,9 @@ def test_fixture_provider_integration_all_scenarios_e2e_postgres(live_postgres_d
             {
                 "timestamp": "2026-11-28T10:02:00Z",
                 "event_type": "alert",
-                "src_ip": "203.0.113.251",  # simulated unavailable
-                "dest_ip": "203.0.113.250", # simulated timeout
-                "dns": {"rrname": "malicious-sim.example.invalid"},  # simulated found malicious
+                "src_ip": "203.0.113.251",
+                "dest_ip": "203.0.113.250",
+                "dns": {"rrname": "malicious-sim.example.invalid"},
                 "alert": {"severity": 2, "signature": "ET FIXTURE SCENARIO CE"},
             },
         )
@@ -919,13 +922,13 @@ def test_fixture_provider_integration_all_scenarios_e2e_postgres(live_postgres_d
         assert r_f.status_code == 201 and r_f.json()["enrichment_status"] == "no_observables"
 
         # Scenario G: Normalization failure -> enrichment skipped
-        bad_raw = json.dumps({"event_type": "alert"})  # missing timestamp
+        bad_raw = json.dumps({"event_type": "alert"})
         r_g = client.post(
             "/api/v1/events/ingest",
             json={
                 "ingestion_id": str(uuid4()),
                 "source_type": "suricata",
-                "sensor_id": f"{_PG_DAY10_PREFIX}scen-g",
+                "sensor_id": f"{sensor_prefix}scen-g",
                 "ingest_time": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 "raw_hash": compute_raw_hash(bad_raw),
                 "raw_payload": bad_raw,
@@ -934,3 +937,34 @@ def test_fixture_provider_integration_all_scenarios_e2e_postgres(live_postgres_d
         assert r_g.status_code == 201
         assert r_g.json()["normalization_status"] == "failed"
         assert r_g.json()["enrichment_status"] is None
+
+        # Verify normalized list endpoint exposes batch enrichments and skipped status cleanly
+        lst = client.get("/api/v1/events/normalized", params={"limit": 20}).json()
+        assert lst["count"] >= 5
+        assert any(it["enrichment_status"] == "skipped" for it in lst["items"])
+        assert any(
+            it["event_id"] == eid_a
+            and it["enrichment"]["context"]["threat_intel"]["provider"] == "autosoc.mock_ti_fixture"
+            for it in lst["items"]
+        )
+
+
+def test_fixture_provider_integration_all_scenarios_e2e_in_memory():
+    db = InMemoryDay9Session()
+
+    async def _override():
+        yield db
+
+    app.dependency_overrides[get_db] = _override
+    try:
+        _run_fixture_scenarios_a_to_h("day10-mem-")
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_fixture_provider_integration_all_scenarios_e2e_postgres(live_postgres_day10):
+    """
+    End-to-end PostgreSQL + API verification across Scenarios A-H using
+    Pranjal's FixtureThreatIntelProvider bridged into DJ's unified orchestrator.
+    """
+    _run_fixture_scenarios_a_to_h(_PG_DAY10_PREFIX)
