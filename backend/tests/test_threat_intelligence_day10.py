@@ -780,13 +780,25 @@ def test_conflicting_providers_resolve_to_unknown_in_orchestrator():
         p_mal = SyncTIProviderAdapter(
             FixtureThreatIntelProvider(
                 provider_name="fixture_mal",
-                fixtures={("ip", "203.0.113.99"): {"verdict": "malicious", "confidence": 0.9}},
+                fixtures={
+                    ("ip", "203.0.113.99"): {
+                        "verdict": "malicious",
+                        "confidence": 0.9,
+                        "evidence": {"categories": ["c2_simulation"], "fixture_id": "CONFLICT-MAL"},
+                    }
+                },
             )
         )
         p_benign = SyncTIProviderAdapter(
             FixtureThreatIntelProvider(
                 provider_name="fixture_benign",
-                fixtures={("ip", "203.0.113.99"): {"verdict": "benign", "confidence": 0.95}},
+                fixtures={
+                    ("ip", "203.0.113.99"): {
+                        "verdict": "benign",
+                        "confidence": 0.95,
+                        "evidence": {"categories": ["allowlisted_simulation"], "fixture_id": "CONFLICT-BENIGN"},
+                    }
+                },
             )
         )
         orch = ThreatIntelOrchestrator(
