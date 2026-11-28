@@ -7,9 +7,9 @@ bounded retrieval endpoints.
 """
 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
-from uuid import UUID
+from uuid import RFC_4122, UUID
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -37,25 +37,27 @@ from app.events.schemas import IngestionEnvelope, SourceTypeEnum
 EventSortFieldEnum = NormalizedEventSortField
 
 MAX_RAW_PAYLOAD_BYTES = 65_536  # 64 KiB per Security Data Contract §3 Stage 1
-RAW_HASH_PATTERN = re.compile(r"^sha256:[0-9a-fA-F]{64}$")
+RAW_HASH_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 PREVIEW_MAX_CHARS = 256
 
 
 class EventIngestionRequest(IngestionEnvelope):
     """
     HTTP ingestion payload validated against the authoritative IngestionEnvelope
-    contract with strict field-format checks. Does not invent a separate contract.
+    contract with strict field-format checks aligned with `validate_ingestion_envelope`.
     """
 
     @field_validator("ingestion_id")
     @classmethod
     def validate_ingestion_id(cls, value: str) -> str:
         if not isinstance(value, str) or not value.strip():
-            raise ValueError("ingestion_id must be a non-empty UUID string")
+            raise ValueError("ingestion_id must be a non-empty UUID v4 string")
         try:
-            UUID(value)
+            parsed = UUID(value)
         except ValueError as exc:
-            raise ValueError("ingestion_id must be a valid UUID") from exc
+            raise ValueError("ingestion_id must be a valid RFC 4122 UUID v4") from exc
+        if parsed.version != 4 or parsed.variant != RFC_4122:
+            raise ValueError("ingestion_id must be a valid RFC 4122 UUID v4")
         return value
 
     @field_validator("sensor_id")
@@ -72,28 +74,34 @@ class EventIngestionRequest(IngestionEnvelope):
     @classmethod
     def validate_ingest_time(cls, value: str) -> str:
         if not isinstance(value, str) or not value.strip():
-            raise ValueError("ingest_time must be a non-empty ISO 8601 timestamp")
+            raise ValueError("ingest_time must be a non-empty ISO 8601 UTC timestamp")
+        stripped = value.strip()
+        if stripped.endswith("Z"):
+            normalized = stripped[:-1] + "+00:00"
+        elif stripped.endswith("+00:00") or stripped.endswith("-00:00"):
+            normalized = stripped
+        else:
+            raise ValueError("ingest_time must use UTC offset ('Z', '+00:00', or '-00:00')")
         try:
-            normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
             parsed = datetime.fromisoformat(normalized)
         except ValueError as exc:
-            raise ValueError("ingest_time must be a valid ISO 8601 timestamp") from exc
-        if parsed.tzinfo is None:
-            raise ValueError("ingest_time must include UTC/timezone offset")
+            raise ValueError("ingest_time must be a valid ISO 8601 UTC timestamp") from exc
+        if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+            raise ValueError("ingest_time must be a valid ISO 8601 UTC timestamp")
         return value
 
     @field_validator("raw_hash")
     @classmethod
     def validate_raw_hash(cls, value: str) -> str:
-        if not RAW_HASH_PATTERN.match(value):
-            raise ValueError("raw_hash must match format 'sha256:<64 hex chars>'")
-        return value.lower()
+        if not isinstance(value, str) or not RAW_HASH_PATTERN.match(value):
+            raise ValueError("raw_hash must match format 'sha256:<64 lowercase hex chars>'")
+        return value
 
     @field_validator("raw_payload")
     @classmethod
     def validate_raw_payload(cls, value: str) -> str:
-        if not value:
-            raise ValueError("raw_payload must not be empty")
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("raw_payload must be a non-empty string")
         if len(value.encode("utf-8")) > MAX_RAW_PAYLOAD_BYTES:
             # Never echo raw_payload content in validation error messages
             raise ValueError(

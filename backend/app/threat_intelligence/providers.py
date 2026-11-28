@@ -827,13 +827,18 @@ class SyncTIProviderAdapter:
             ObservableLookupRequest,
             ProviderLookupStatusEnum,
         )
+        from app.threat_intelligence.reliability import (
+            enforce_verdict_and_evidence_invariants,
+        )
 
         # Pass strictly minimal observable-only request (never event IDs, raw payloads, or secrets)
         sync_req = ObservableLookupRequest(
             observable_type=request.observable_type,
             normalized_value=request.normalized_value,
         )
-        res = self._sync_provider.lookup(sync_req)
+        raw_res = self._sync_provider.lookup(sync_req)
+        # Enforce Day 11 security invariants before mapping so unsubstantiated verdicts are downgraded
+        res = enforce_verdict_and_evidence_invariants(raw_res)
 
         status_map = {
             ProviderLookupStatusEnum.FOUND: ThreatIntelLookupStatusEnum.SUCCESS,
@@ -854,8 +859,9 @@ class SyncTIProviderAdapter:
             res.lookup_status, ThreatIntelLookupStatusEnum.INVALID_RESPONSE
         )
         evidence_text = _format_sync_evidence(res.evidence, res.errors, self.provider_id)
-        if res.verdict != ObservableVerdictEnum.UNKNOWN and not evidence_text:
-            evidence_text = f"{self.provider_id} returned verdict '{res.verdict.value}'"
+        if res.verdict != ObservableVerdictEnum.UNKNOWN and not evidence_text and res.references:
+            ref_sources = ", ".join(ref.source_name for ref in res.references[:5])
+            evidence_text = f"{self.provider_id} references: {ref_sources}"[:512]
 
         categories: List[str] = []
         if isinstance(res.evidence, dict) and isinstance(res.evidence.get("categories"), list):

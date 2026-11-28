@@ -386,6 +386,15 @@ class EnrichmentService:
             event_ctx, fields = _extract_event_context(
                 _norm_record_to_dict(norm_record), []
             )
+            if isinstance(raw_output.get("threat_intel_context"), dict):
+                event_ctx = event_ctx.model_copy(
+                    update={
+                        "threat_intel": ThreatIntelContext(
+                            **raw_output["threat_intel_context"]
+                        )
+                    }
+                )
+                fields.append("context.threat_intel")
             return EnrichmentResult(
                 status=EnrichmentStatusEnum(raw_output["enrichment_status"]),
                 provider=provider,
