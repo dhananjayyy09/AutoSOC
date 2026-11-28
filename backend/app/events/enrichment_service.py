@@ -357,6 +357,11 @@ class EnrichmentService:
     def __init__(self, enricher: Optional[EventEnricherProtocol] = None) -> None:
         self._enricher: EventEnricherProtocol = enricher or DeterministicLocalEnricher()
 
+    @property
+    def enricher(self) -> EventEnricherProtocol:
+        """Public accessor for the configured EventEnricherProtocol instance."""
+        return self._enricher
+
     async def enrich_by_event_id(
         self, session: AsyncSession, event_id: str, *, retry: bool = False
     ) -> Optional[EventEnrichment]:
@@ -386,6 +391,15 @@ class EnrichmentService:
             event_ctx, fields = _extract_event_context(
                 _norm_record_to_dict(norm_record), []
             )
+            if isinstance(raw_output.get("threat_intel_context"), dict):
+                event_ctx = event_ctx.model_copy(
+                    update={
+                        "threat_intel": ThreatIntelContext(
+                            **raw_output["threat_intel_context"]
+                        )
+                    }
+                )
+                fields.append("context.threat_intel")
             return EnrichmentResult(
                 status=EnrichmentStatusEnum(raw_output["enrichment_status"]),
                 provider=provider,

@@ -159,6 +159,7 @@ def test_offline_mode_when_ti_disabled_or_unconfigured():
         orch_disabled = ThreatIntelOrchestrator(
             enabled=False,
             provider_names=["stub_ti"],
+            cache=ThreatIntelCache(ttl_seconds=60, use_redis=False),
             providers={"stub_ti": stub},
         )
         enricher = DeterministicLocalEnricher(ti_orchestrator=orch_disabled)
@@ -181,6 +182,7 @@ def test_offline_mode_when_ti_disabled_or_unconfigured():
         orch_unconf = ThreatIntelOrchestrator(
             enabled=True,
             provider_names=["virustotal"],
+            cache=ThreatIntelCache(ttl_seconds=60, use_redis=False),
             providers={"virustotal": unconfigured},
         )
         res2 = await DeterministicLocalEnricher(ti_orchestrator=orch_unconf).enrich(norm_dict)
@@ -463,6 +465,7 @@ def test_max_observables_cap_enforced():
             enabled=True,
             provider_names=["cap_ti"],
             max_observables_per_event=2,
+            cache=ThreatIntelCache(ttl_seconds=60, use_redis=False),
             providers={"cap_ti": stub},
         )
         res = await DeterministicLocalEnricher(ti_orchestrator=orch).enrich(
@@ -777,13 +780,25 @@ def test_conflicting_providers_resolve_to_unknown_in_orchestrator():
         p_mal = SyncTIProviderAdapter(
             FixtureThreatIntelProvider(
                 provider_name="fixture_mal",
-                fixtures={("ip", "203.0.113.99"): {"verdict": "malicious", "confidence": 0.9}},
+                fixtures={
+                    ("ip", "203.0.113.99"): {
+                        "verdict": "malicious",
+                        "confidence": 0.9,
+                        "evidence": {"categories": ["c2_simulation"], "fixture_id": "CONFLICT-MAL"},
+                    }
+                },
             )
         )
         p_benign = SyncTIProviderAdapter(
             FixtureThreatIntelProvider(
                 provider_name="fixture_benign",
-                fixtures={("ip", "203.0.113.99"): {"verdict": "benign", "confidence": 0.95}},
+                fixtures={
+                    ("ip", "203.0.113.99"): {
+                        "verdict": "benign",
+                        "confidence": 0.95,
+                        "evidence": {"categories": ["allowlisted_simulation"], "fixture_id": "CONFLICT-BENIGN"},
+                    }
+                },
             )
         )
         orch = ThreatIntelOrchestrator(
