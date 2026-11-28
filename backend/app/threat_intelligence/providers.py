@@ -317,6 +317,60 @@ _BEARER_HEADER_RE = re.compile(r"(?i)(bearer|apikey|x-apikey|key)\s*[:=]\s*[^\s,
 class ThreatIntelProviderUnavailableError(RuntimeError):
     """Raised cleanly when an external TI provider returns HTTP 401/403/429/5xx or transport failure."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool = True,
+        retry_after_seconds: Optional[float] = None,
+        rate_limited: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+        self.retry_after_seconds = retry_after_seconds
+        self.rate_limited = rate_limited
+
+
+def _parse_retry_after(headers: Any) -> Optional[float]:
+    """Safely parse numeric Retry-After header seconds into a bounded float."""
+    if headers is None:
+        return None
+    raw = headers.get("retry-after") or headers.get("Retry-After")
+    if not raw or not isinstance(raw, str):
+        return None
+    try:
+        seconds = float(raw.strip())
+    except ValueError:
+        return None
+    if seconds <= 0 or seconds != seconds:
+        return None
+    return min(3600.0, seconds)
+
+
+def _raise_for_http_unavailable(provider_label: str, resp: Any) -> None:
+    """Raise ThreatIntelProviderUnavailableError with rate-limit/retryability metadata."""
+    status_code = int(resp.status_code)
+    if status_code in (401, 403):
+        raise ThreatIntelProviderUnavailableError(
+            f"{provider_label} HTTP {status_code} response",
+            retryable=False,
+            rate_limited=False,
+        )
+    if status_code == 429:
+        raise ThreatIntelProviderUnavailableError(
+            f"{provider_label} HTTP 429 rate limit",
+            retryable=True,
+            retry_after_seconds=_parse_retry_after(getattr(resp, "headers", None)),
+            rate_limited=True,
+        )
+    if status_code >= 500:
+        raise ThreatIntelProviderUnavailableError(
+            f"{provider_label} HTTP {status_code} response",
+            retryable=True,
+            retry_after_seconds=_parse_retry_after(getattr(resp, "headers", None)),
+            rate_limited=False,
+        )
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -448,9 +502,7 @@ class VirusTotalProvider:
             }
 
         if resp.status_code in (401, 403, 429) or resp.status_code >= 500:
-            raise ThreatIntelProviderUnavailableError(
-                f"VirusTotal HTTP {resp.status_code} response"
-            )
+            _raise_for_http_unavailable("VirusTotal", resp)
         if resp.status_code >= 400:
             return {
                 "provider": self.provider_id,
@@ -549,9 +601,7 @@ class AbuseIPDBProvider:
             resp = await client.get(f"{self._base_url}/check", headers=headers, params=params)
 
         if resp.status_code in (401, 403, 429) or resp.status_code >= 500:
-            raise ThreatIntelProviderUnavailableError(
-                f"AbuseIPDB HTTP {resp.status_code} response"
-            )
+            _raise_for_http_unavailable("AbuseIPDB", resp)
         if resp.status_code >= 400:
             return {
                 "provider": self.provider_id,
@@ -670,9 +720,7 @@ class GenericHTTPThreatIntelProvider:
                 "live_lookup_performed": True,
             }
         if resp.status_code in (401, 403, 429) or resp.status_code >= 500:
-            raise ThreatIntelProviderUnavailableError(
-                f"Generic TI gateway HTTP {resp.status_code} response"
-            )
+            _raise_for_http_unavailable("Generic TI gateway", resp)
 
         data = resp.json()
         if not isinstance(data, dict):

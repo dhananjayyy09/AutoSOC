@@ -66,6 +66,10 @@ from app.events.schemas import (
     NormalizationStatusEnum,
     SourceTypeEnum,
 )
+from app.threat_intelligence import (
+    ThreatIntelOrchestrator,
+    ThreatIntelProvidersStatusResponse,
+)
 from app.events.validation import (
     MAX_RAW_PAYLOAD_BYTES,
     ValidationErrorCategory,
@@ -589,3 +593,21 @@ async def trigger_normalized_event_enrichment(
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     return _to_enrichment_response(record)
+
+
+@router.get(
+    "/threat-intelligence/providers",
+    status_code=status.HTTP_200_OK,
+    response_model=ThreatIntelProvidersStatusResponse,
+    summary="Get Threat Intelligence Provider Operational Status",
+)
+async def get_threat_intelligence_providers_status() -> ThreatIntelProvidersStatusResponse:
+    """
+    Return safe, credential-free operational health and circuit-breaker status
+    for configured Threat Intelligence providers without triggering live lookups.
+    """
+    enricher = getattr(_default_enrichment_service, "_enricher", None)
+    orchestrator = getattr(enricher, "ti_orchestrator", None)
+    if isinstance(orchestrator, ThreatIntelOrchestrator):
+        return orchestrator.get_providers_status()
+    return ThreatIntelOrchestrator().get_providers_status()

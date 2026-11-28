@@ -36,6 +36,15 @@ from app.threat_intelligence.providers import (
     VirusTotalProvider,
     build_configured_ti_providers,
 )
+from app.threat_intelligence.reliability import (
+    CircuitBreakerStateEnum,
+    ProviderFailureCategoryEnum,
+    ProviderOperationalStateEnum,
+    ProviderOperationalStatus,
+    ProviderReliabilityPolicy,
+    ProviderReliabilityTracker,
+    ThreatIntelProvidersStatusResponse,
+)
 from app.threat_intelligence.schemas import (
     EnrichedObservable,
     EnrichmentProvenance,
@@ -53,6 +62,7 @@ from app.threat_intelligence.ti_adapter import ThreatIntelObservablePipeline
 __all__ = [
     "AbuseIPDBProvider",
     "AsyncThreatIntelProviderProtocol",
+    "CircuitBreakerStateEnum",
     "DEFAULT_SYNTHETIC_TI_FIXTURES",
     "DeterministicEventEnricher",
     "DeterministicLocalEnrichmentProvider",
@@ -68,8 +78,13 @@ __all__ = [
     "ObservableLookupResult",
     "ObservableTypeEnum",
     "ObservableVerdictEnum",
+    "ProviderFailureCategoryEnum",
     "ProviderLookupStatusEnum",
+    "ProviderOperationalStateEnum",
+    "ProviderOperationalStatus",
     "ProviderReference",
+    "ProviderReliabilityPolicy",
+    "ProviderReliabilityTracker",
     "SyncTIProviderAdapter",
     "ThreatIntelCache",
     "ThreatIntelLookupRequest",
@@ -80,6 +95,7 @@ __all__ = [
     "ThreatIntelOrchestrator",
     "ThreatIntelProviderProtocol",
     "ThreatIntelProviderUnavailableError",
+    "ThreatIntelProvidersStatusResponse",
     "VirusTotalProvider",
     "build_configured_ti_providers",
     "build_ti_cache_key",
