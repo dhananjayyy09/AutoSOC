@@ -24,9 +24,10 @@ from typing import (
     Tuple,
 )
 
-from pydantic import ConfigDict
+from app.events.schemas import PYDANTIC_V2, BaseModel, Field
 
-from app.events.schemas import BaseModel, Field
+if PYDANTIC_V2:
+    from pydantic import ConfigDict
 from app.events.validation import ValidationErrorCategory, ValidationIssue
 from app.threat_intelligence.provider_contract import (
     ObservableLookupRequest,
@@ -247,7 +248,8 @@ class ProviderFailureCategoryEnum(str, Enum):
 class ProviderReliabilityPolicy(BaseModel):
     """Validated, bounded retry and circuit-breaker policy for external TI lookups."""
 
-    model_config = ConfigDict(extra="forbid")
+    if PYDANTIC_V2:
+        model_config = ConfigDict(extra="forbid")
 
     max_retries: int = Field(default=2, ge=0, le=5)
     retry_base_delay_seconds: float = Field(default=0.25, ge=0.0, le=10.0)
@@ -276,7 +278,8 @@ class ProviderReliabilityPolicy(BaseModel):
 class ProviderOperationalStatus(BaseModel):
     """Safe, credential-free operational snapshot for one TI provider."""
 
-    model_config = ConfigDict(extra="forbid")
+    if PYDANTIC_V2:
+        model_config = ConfigDict(extra="forbid")
 
     provider: str
     provider_version: str
@@ -298,7 +301,8 @@ class ProviderOperationalStatus(BaseModel):
 class ThreatIntelProvidersStatusResponse(BaseModel):
     """Versioned API response summarizing configured TI provider operational health."""
 
-    model_config = ConfigDict(extra="forbid")
+    if PYDANTIC_V2:
+        model_config = ConfigDict(extra="forbid")
 
     ti_enabled: bool
     policy: Dict[str, Any] = Field(default_factory=dict)
