@@ -401,8 +401,16 @@ export function EnrichmentContextPanel({
 
               return (
                 <TableRow key={`${obs.observable}-${obs.observable_type}-${idx}`}>
-                  <TableCell className="font-mono text-xs break-all">
-                    <div>{obs.observable}</div>
+                  <TableCell className="min-w-[140px] font-mono text-xs">
+                    <div
+                      className={
+                        obs.observable && obs.observable.length <= 45
+                          ? "whitespace-nowrap"
+                          : "break-all"
+                      }
+                    >
+                      {obs.observable}
+                    </div>
                     {obs.original_value && obs.original_value !== obs.observable && (
                       <div className="text-[11px] text-muted-foreground">
                         orig: {obs.original_value}
