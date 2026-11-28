@@ -80,7 +80,19 @@ describe('HealthCheck Component', () => {
     await waitFor(() => {
       expect(screen.getByText('Backend Unavailable')).toBeInTheDocument()
       expect(screen.getByText('UNAVAILABLE')).toBeInTheDocument()
+      expect(screen.getAllByText('Unknown').length).toBe(4)
     })
+    expect(screen.queryByText('Not Ready')).not.toBeInTheDocument()
+  })
+
+  it('shows Checking... for infrastructure dependencies while readiness request is loading', () => {
+    ;(checkHealth as jest.Mock).mockReturnValue(new Promise(() => {}))
+    ;(checkReadiness as jest.Mock).mockReturnValue(new Promise(() => {}))
+
+    render(<HealthCheck />)
+    expect(screen.getByText('CHECKING...')).toBeInTheDocument()
+    expect(screen.getAllByText('Checking...').length).toBe(4)
+    expect(screen.queryByText('Not Ready')).not.toBeInTheDocument()
   })
 
   it('calls retry when Refresh button is clicked', async () => {

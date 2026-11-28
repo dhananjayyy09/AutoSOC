@@ -7,6 +7,17 @@ import { StatusIndicator } from "@/components/ui/status-indicator"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { ShieldAlert, ShieldCheck, RefreshCw, Server, Database } from "lucide-react"
+import type { InfrastructureReadiness } from "@/types"
+
+const INFRASTRUCTURE_DEPENDENCIES: ReadonlyArray<{
+  key: keyof InfrastructureReadiness
+  label: string
+}> = [
+  { key: "postgres", label: "PostgreSQL" },
+  { key: "redis", label: "Redis" },
+  { key: "qdrant", label: "Qdrant" },
+  { key: "kafka", label: "Kafka" },
+]
 
 export function HealthCheck() {
   const { status: livenessStatus, isRetrying: isLivenessRetrying, retry: retryLiveness } = useHealthCheck()
@@ -107,42 +118,42 @@ export function HealthCheck() {
               Infrastructure Dependencies
             </p>
             <div className="grid grid-cols-2 gap-2 text-xs">
-              <div className="flex items-center justify-between rounded-md bg-background/60 px-3 py-2 border border-border/80">
-                <div className="flex items-center gap-2">
-                  <span className={`h-2 w-2 rounded-full ${readinessData?.postgres ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]" : "bg-rose-500"}`} />
-                  <span className="font-medium text-foreground">PostgreSQL</span>
-                </div>
-                <span className={`font-semibold ${readinessData?.postgres ? "text-emerald-400" : "text-rose-400"}`}>
-                  {readinessData?.postgres ? "Ready" : "Not Ready"}
-                </span>
-              </div>
-              <div className="flex items-center justify-between rounded-md bg-background/60 px-3 py-2 border border-border/80">
-                <div className="flex items-center gap-2">
-                  <span className={`h-2 w-2 rounded-full ${readinessData?.redis ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]" : "bg-rose-500"}`} />
-                  <span className="font-medium text-foreground">Redis</span>
-                </div>
-                <span className={`font-semibold ${readinessData?.redis ? "text-emerald-400" : "text-rose-400"}`}>
-                  {readinessData?.redis ? "Ready" : "Not Ready"}
-                </span>
-              </div>
-              <div className="flex items-center justify-between rounded-md bg-background/60 px-3 py-2 border border-border/80">
-                <div className="flex items-center gap-2">
-                  <span className={`h-2 w-2 rounded-full ${readinessData?.qdrant ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]" : "bg-rose-500"}`} />
-                  <span className="font-medium text-foreground">Qdrant</span>
-                </div>
-                <span className={`font-semibold ${readinessData?.qdrant ? "text-emerald-400" : "text-rose-400"}`}>
-                  {readinessData?.qdrant ? "Ready" : "Not Ready"}
-                </span>
-              </div>
-              <div className="flex items-center justify-between rounded-md bg-background/60 px-3 py-2 border border-border/80">
-                <div className="flex items-center gap-2">
-                  <span className={`h-2 w-2 rounded-full ${readinessData?.kafka ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]" : "bg-rose-500"}`} />
-                  <span className="font-medium text-foreground">Kafka</span>
-                </div>
-                <span className={`font-semibold ${readinessData?.kafka ? "text-emerald-400" : "text-rose-400"}`}>
-                  {readinessData?.kafka ? "Ready" : "Not Ready"}
-                </span>
-              </div>
+              {INFRASTRUCTURE_DEPENDENCIES.map(({ key, label }) => {
+                const serviceReady = readinessData ? readinessData[key] : undefined
+                const dotClass =
+                  serviceReady === true
+                    ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]"
+                    : serviceReady === false
+                      ? "bg-rose-500"
+                      : "bg-slate-500"
+                const textClass =
+                  serviceReady === true
+                    ? "text-emerald-400"
+                    : serviceReady === false
+                      ? "text-rose-400"
+                      : "text-muted-foreground"
+                const statusLabel =
+                  serviceReady === true
+                    ? "Ready"
+                    : serviceReady === false
+                      ? "Not Ready"
+                      : readinessState === "loading"
+                        ? "Checking..."
+                        : "Unknown"
+
+                return (
+                  <div
+                    key={key}
+                    className="flex items-center justify-between rounded-md bg-background/60 px-3 py-2 border border-border/80"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className={`h-2 w-2 rounded-full ${dotClass}`} />
+                      <span className="font-medium text-foreground">{label}</span>
+                    </div>
+                    <span className={`font-semibold ${textClass}`}>{statusLabel}</span>
+                  </div>
+                )
+              })}
             </div>
           </div>
         </div>

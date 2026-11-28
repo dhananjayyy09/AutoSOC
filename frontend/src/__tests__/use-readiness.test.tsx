@@ -111,4 +111,29 @@ describe('useReadiness', () => {
 
     expect(checkReadiness).toHaveBeenCalledTimes(2)
   })
+
+  it('clears stale readiness data when retry transitions to unavailable', async () => {
+    ;(checkReadiness as jest.Mock)
+      .mockResolvedValueOnce({
+        state: 'ready',
+        data: { status: 'ok', postgres: true, redis: true, qdrant: true, kafka: true },
+      })
+      .mockResolvedValueOnce({ state: 'unavailable' })
+
+    const { result } = renderHook(() => useReadiness())
+
+    await waitFor(() => {
+      expect(result.current.state).toBe('ready')
+      expect(result.current.data?.postgres).toBe(true)
+    })
+
+    await act(async () => {
+      await result.current.retry()
+    })
+
+    await waitFor(() => {
+      expect(result.current.state).toBe('unavailable')
+      expect(result.current.data).toBeUndefined()
+    })
+  })
 })

@@ -14,12 +14,14 @@ export function useReadiness(intervalMs?: number) {
       setData(res.data)
     } catch {
       setState("unavailable")
+      setData(undefined)
     }
   }, [])
 
   const retry = React.useCallback(async () => {
     setIsRetrying(true)
     setState("loading")
+    setData(undefined)
     try {
       await performCheck()
     } finally {

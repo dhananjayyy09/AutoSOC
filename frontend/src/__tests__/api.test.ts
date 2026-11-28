@@ -12,6 +12,7 @@ import {
   isAbortError,
   isNetworkError,
   queryNormalizedEvents,
+  resolveApiBaseUrl,
 } from '@/lib/api'
 import type { SystemInfoResponse } from '@/types'
 
@@ -212,6 +213,25 @@ describe('checkHealth', () => {
     const result = await checkHealth()
     expect(result.status).toBe('unavailable')
     expect(result.error).toBeDefined()
+  })
+
+  it('should return unavailable on malformed or non-ok health response', async () => {
+    ;(global.fetch as jest.Mock).mockResolvedValueOnce({ ok: true, json: async () => ({ status: 'degraded' }) })
+    expect((await checkHealth()).status).toBe('unavailable')
+
+    ;(global.fetch as jest.Mock).mockResolvedValueOnce({ ok: true, json: async () => null })
+    expect((await checkHealth()).status).toBe('unavailable')
+  })
+})
+
+describe('resolveApiBaseUrl', () => {
+  it('validates http/https URLs, strips embedded credentials and trailing slashes, and falls back safely', () => {
+    expect(resolveApiBaseUrl('https://api.autosoc.local:8443/')).toBe('https://api.autosoc.local:8443')
+    expect(resolveApiBaseUrl('https://user:secret@api.autosoc.local/')).toBe('https://api.autosoc.local')
+    expect(resolveApiBaseUrl('')).toBe('http://localhost:8000')
+    expect(resolveApiBaseUrl('   ')).toBe('http://localhost:8000')
+    expect(resolveApiBaseUrl('javascript:alert(1)')).toBe('http://localhost:8000')
+    expect(resolveApiBaseUrl('not-a-valid-url')).toBe('http://localhost:8000')
   })
 })
 
