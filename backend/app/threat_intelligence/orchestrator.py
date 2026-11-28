@@ -22,18 +22,27 @@ from pydantic import BaseModel, Field, ValidationError
 from app.core.config import settings
 from app.events.validation import ValidationErrorCategory, ValidationIssue
 from app.threat_intelligence.cache import ThreatIntelCache
+from app.threat_intelligence.provider_contract import validate_observable_for_lookup
 from app.threat_intelligence.providers import (
     ThreatIntelProviderProtocol,
+    ThreatIntelProviderRateLimitedError,
     ThreatIntelProviderUnavailableError,
     build_configured_ti_providers,
     scrub_secrets,
 )
 from app.threat_intelligence.reliability import (
+<<<<<<< HEAD
     ProviderFailureCategoryEnum,
     ProviderOperationalStatus,
     ProviderReliabilityPolicy,
     ProviderReliabilityTracker,
     ThreatIntelProvidersStatusResponse,
+=======
+    RETRYABLE_STATUS_VALUES,
+    ProviderCircuitBreaker,
+    RetryPolicy,
+    deduplicate_references,
+>>>>>>> origin/feature/pranjal/day11
 )
 from app.threat_intelligence.schemas import (
     EnrichedObservable,
@@ -87,6 +96,9 @@ class ThreatIntelOrchestrator:
         max_observables_per_event: Optional[int] = None,
         cache: Optional[ThreatIntelCache] = None,
         providers: Optional[Dict[str, ThreatIntelProviderProtocol]] = None,
+        retry_policy: Optional[RetryPolicy] = None,
+        circuit_breaker: Optional[ProviderCircuitBreaker] = None,
+        disabled_providers: Optional[Sequence[str]] = None,
         settings_obj: Any = settings,
         reliability_policy: Optional[ProviderReliabilityPolicy] = None,
         reliability_tracker: Optional[ProviderReliabilityTracker] = None,
@@ -103,6 +115,11 @@ class ThreatIntelOrchestrator:
         self._explicit_timeout = timeout_seconds
         self._explicit_max_observables = max_observables_per_event
         self._explicit_providers = providers
+        self._retry_policy = retry_policy or RetryPolicy(max_attempts=1)
+        self._circuit_breaker = circuit_breaker or ProviderCircuitBreaker()
+        self._disabled_providers = {
+            p.strip().lower() for p in (disabled_providers or ()) if p and p.strip()
+        }
 
         self._cache = cache or ThreatIntelCache(
             ttl_seconds=int(getattr(settings_obj, "TI_CACHE_TTL_SECONDS", 300)),
@@ -152,6 +169,7 @@ class ThreatIntelOrchestrator:
         return self._cache
 
     @property
+<<<<<<< HEAD
     def reliability_tracker(self) -> ProviderReliabilityTracker:
         return self._tracker
 
@@ -239,6 +257,14 @@ class ThreatIntelOrchestrator:
             providers=statuses,
             generated_at=_utc_now_iso(),
         )
+=======
+    def circuit_breaker(self) -> ProviderCircuitBreaker:
+        return self._circuit_breaker
+
+    @property
+    def retry_policy(self) -> RetryPolicy:
+        return self._retry_policy
+>>>>>>> origin/feature/pranjal/day11
 
     def _collect_secrets(self) -> List[str]:
         secrets: List[str] = []
@@ -327,9 +353,105 @@ class ThreatIntelOrchestrator:
         request: ThreatIntelLookupRequest,
         secrets: Sequence[str],
     ) -> ThreatIntelLookupResult:
+<<<<<<< HEAD
         def _validate_raw_response(
             raw_output: Any,
         ) -> tuple[Optional[ThreatIntelLookupResult], Optional[str]]:
+=======
+        if (
+            provider.provider_id.strip().lower() in self._disabled_providers
+            or not bool(getattr(provider, "is_enabled", lambda: True)() if callable(getattr(provider, "is_enabled", None)) else getattr(provider, "is_enabled", True))
+        ):
+            return ThreatIntelLookupResult(
+                provider=provider.provider_id,
+                provider_version=provider.provider_version,
+                observable_type=request.observable_type,
+                normalized_value=request.normalized_value,
+                lookup_status=ThreatIntelLookupStatusEnum.PROVIDER_DISABLED,
+                verdict=ObservableVerdictEnum.UNKNOWN,
+                evidence=f"TI provider '{provider.provider_id}' is disabled",
+                lookup_timestamp=_utc_now_iso(),
+                live_lookup_performed=False,
+                error_message=f"Provider '{provider.provider_id}' is disabled",
+            )
+
+        if not self._circuit_breaker.allow_request(provider.provider_id):
+            return ThreatIntelLookupResult(
+                provider=provider.provider_id,
+                provider_version=provider.provider_version,
+                observable_type=request.observable_type,
+                normalized_value=request.normalized_value,
+                lookup_status=ThreatIntelLookupStatusEnum.CIRCUIT_OPEN,
+                verdict=ObservableVerdictEnum.UNKNOWN,
+                evidence=f"Circuit breaker OPEN for '{provider.provider_id}'; request short-circuited",
+                lookup_timestamp=_utc_now_iso(),
+                live_lookup_performed=False,
+                error_message=f"Provider '{provider.provider_id}' circuit breaker open",
+            )
+
+        async def _single_attempt() -> ThreatIntelLookupResult:
+            try:
+                raw_output = await asyncio.wait_for(
+                    provider.lookup(request),
+                    timeout=request.timeout_seconds,
+                )
+            except asyncio.TimeoutError:
+                return ThreatIntelLookupResult(
+                    provider=provider.provider_id,
+                    provider_version=provider.provider_version,
+                    observable_type=request.observable_type,
+                    normalized_value=request.normalized_value,
+                    lookup_status=ThreatIntelLookupStatusEnum.TIMEOUT,
+                    verdict=ObservableVerdictEnum.UNKNOWN,
+                    evidence=f"TI provider '{provider.provider_id}' timed out after {request.timeout_seconds:.1f}s",
+                    lookup_timestamp=_utc_now_iso(),
+                    live_lookup_performed=False,
+                    error_message=f"Provider '{provider.provider_id}' lookup timeout",
+                )
+            except ThreatIntelProviderRateLimitedError as exc:
+                safe_msg = scrub_secrets(str(exc), secrets) or "HTTP 429"
+                return ThreatIntelLookupResult(
+                    provider=provider.provider_id,
+                    provider_version=provider.provider_version,
+                    observable_type=request.observable_type,
+                    normalized_value=request.normalized_value,
+                    lookup_status=ThreatIntelLookupStatusEnum.RATE_LIMITED,
+                    verdict=ObservableVerdictEnum.UNKNOWN,
+                    evidence=f"TI provider '{provider.provider_id}' rate limited",
+                    lookup_timestamp=_utc_now_iso(),
+                    live_lookup_performed=False,
+                    error_message=f"{provider.provider_id} rate limited: {safe_msg}"[:256],
+                )
+            except (ThreatIntelProviderUnavailableError, httpx.HTTPError, ConnectionError, OSError) as exc:
+                safe_msg = scrub_secrets(str(exc), secrets) or type(exc).__name__
+                return ThreatIntelLookupResult(
+                    provider=provider.provider_id,
+                    provider_version=provider.provider_version,
+                    observable_type=request.observable_type,
+                    normalized_value=request.normalized_value,
+                    lookup_status=ThreatIntelLookupStatusEnum.UNAVAILABLE,
+                    verdict=ObservableVerdictEnum.UNKNOWN,
+                    evidence=f"TI provider '{provider.provider_id}' unavailable",
+                    lookup_timestamp=_utc_now_iso(),
+                    live_lookup_performed=False,
+                    error_message=f"{provider.provider_id} unavailable: {safe_msg}"[:256],
+                )
+            except Exception as exc:
+                safe_msg = scrub_secrets(type(exc).__name__, secrets)
+                return ThreatIntelLookupResult(
+                    provider=provider.provider_id,
+                    provider_version=provider.provider_version,
+                    observable_type=request.observable_type,
+                    normalized_value=request.normalized_value,
+                    lookup_status=ThreatIntelLookupStatusEnum.INVALID_RESPONSE,
+                    verdict=ObservableVerdictEnum.UNKNOWN,
+                    evidence=f"TI provider '{provider.provider_id}' failed with {safe_msg}",
+                    lookup_timestamp=_utc_now_iso(),
+                    live_lookup_performed=False,
+                    error_message=f"{provider.provider_id} error: {safe_msg}"[:256],
+                )
+
+>>>>>>> origin/feature/pranjal/day11
             if not isinstance(raw_output, dict) or contains_forbidden_ti_keys(raw_output):
                 return None, f"{provider.provider_id} returned malformed or unsafe response"
 
@@ -344,6 +466,8 @@ class ThreatIntelOrchestrator:
                 candidate["evidence"] = scrub_secrets(candidate["evidence"], secrets)
             if isinstance(candidate.get("error_message"), str):
                 candidate["error_message"] = scrub_secrets(candidate["error_message"], secrets)
+            if isinstance(candidate.get("references"), list):
+                candidate["references"] = deduplicate_references(candidate["references"])
 
             try:
                 validated = ThreatIntelLookupResult(**candidate)
@@ -570,6 +694,53 @@ class ThreatIntelOrchestrator:
             assert last_result is not None
             return last_result
 
+        async def _call_and_validate() -> ThreatIntelLookupResult:
+            last_res: Optional[ThreatIntelLookupResult] = None
+            attempts_made = 0
+            for attempt in range(1, self._retry_policy.max_attempts + 1):
+                attempts_made = attempt
+                last_res = await _single_attempt()
+                status_val = last_res.lookup_status.value
+                if status_val in (
+                    ThreatIntelLookupStatusEnum.SUCCESS.value,
+                    ThreatIntelLookupStatusEnum.NO_DATA.value,
+                    ThreatIntelLookupStatusEnum.CACHE_HIT.value,
+                ):
+                    self._circuit_breaker.record_success(provider.provider_id)
+                    return last_res
+                if not self._retry_policy.should_retry(status_val, attempt):
+                    break
+
+            assert last_res is not None
+            final_status = last_res.lookup_status
+            final_error = last_res.error_message
+            final_evidence = last_res.evidence
+            if attempts_made > 1 and final_status.value in RETRYABLE_STATUS_VALUES:
+                prev_reason = final_status.value
+                final_status = ThreatIntelLookupStatusEnum.RETRY_EXHAUSTED
+                final_error = (
+                    f"{provider.provider_id} exhausted {attempts_made} retries (last: {prev_reason})"
+                )[:256]
+                final_evidence = (
+                    f"TI provider '{provider.provider_id}' exhausted {attempts_made} attempts; verdict kept unknown"
+                )
+
+            self._circuit_breaker.record_failure(provider.provider_id, final_status.value)
+            return ThreatIntelLookupResult(
+                provider=last_res.provider,
+                provider_version=last_res.provider_version,
+                observable_type=last_res.observable_type,
+                normalized_value=last_res.normalized_value,
+                lookup_status=final_status,
+                verdict=ObservableVerdictEnum.UNKNOWN,
+                confidence=None,
+                evidence=final_evidence,
+                references=[],
+                lookup_timestamp=last_res.lookup_timestamp,
+                live_lookup_performed=False,
+                error_message=final_error,
+            )
+
         return await self._cache.get_or_fetch_singleflight(
             provider=provider.provider_id,
             observable_type=request.observable_type,
@@ -623,9 +794,13 @@ class ThreatIntelOrchestrator:
 
         for preferred_status in (
             ThreatIntelLookupStatusEnum.NO_DATA,
+            ThreatIntelLookupStatusEnum.RETRY_EXHAUSTED,
+            ThreatIntelLookupStatusEnum.RATE_LIMITED,
+            ThreatIntelLookupStatusEnum.CIRCUIT_OPEN,
             ThreatIntelLookupStatusEnum.TIMEOUT,
             ThreatIntelLookupStatusEnum.UNAVAILABLE,
             ThreatIntelLookupStatusEnum.INVALID_RESPONSE,
+            ThreatIntelLookupStatusEnum.PROVIDER_DISABLED,
             ThreatIntelLookupStatusEnum.UNSUPPORTED,
         ):
             for r in results:
@@ -732,9 +907,38 @@ class ThreatIntelOrchestrator:
                 )
                 continue
 
+            is_valid_obs, _, canonical_obs, obs_err = validate_observable_for_lookup(
+                obs.observable_type, obs.normalized_value
+            )
+            if not is_valid_obs or canonical_obs is None:
+                has_partial_failures = True
+                warnings.append(
+                    ValidationIssue(
+                        category=ValidationErrorCategory.INVALID_SCHEMA_TYPE,
+                        field=f"ti.observable.{obs.observable_type.value}",
+                        message=obs_err or "Invalid observable rejected before TI provider lookup",
+                        severity="warning",
+                    )
+                )
+                updated_obs.append(
+                    obs.model_copy(
+                        update={
+                            "verdict": ObservableVerdictEnum.UNKNOWN,
+                            "confidence": None,
+                            "lookup_status": ThreatIntelLookupStatusEnum.INVALID_OBSERVABLE.value,
+                            "provenance": obs.provenance.model_copy(
+                                update={
+                                    "lookup_status": ThreatIntelLookupStatusEnum.INVALID_OBSERVABLE.value,
+                                }
+                            ),
+                        }
+                    )
+                )
+                continue
+
             req = ThreatIntelLookupRequest(
                 observable_type=obs.observable_type,
-                normalized_value=obs.normalized_value,
+                normalized_value=canonical_obs,
                 source_event_id=source_event_id,
                 ingestion_id=ingestion_id,
                 timeout_seconds=timeout,
@@ -763,6 +967,10 @@ class ThreatIntelOrchestrator:
                 if r.lookup_status in (
                     ThreatIntelLookupStatusEnum.TIMEOUT,
                     ThreatIntelLookupStatusEnum.UNAVAILABLE,
+                    ThreatIntelLookupStatusEnum.RATE_LIMITED,
+                    ThreatIntelLookupStatusEnum.RETRY_EXHAUSTED,
+                    ThreatIntelLookupStatusEnum.CIRCUIT_OPEN,
+                    ThreatIntelLookupStatusEnum.PROVIDER_DISABLED,
                     ThreatIntelLookupStatusEnum.INVALID_RESPONSE,
                 ):
                     has_partial_failures = True

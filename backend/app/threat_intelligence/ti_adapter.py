@@ -20,7 +20,14 @@ from app.threat_intelligence.provider_contract import (
     ProviderLookupStatusEnum,
     ThreatIntelProviderProtocol,
     utc_now_iso,
-    validate_observable_for_lookup,
+)
+from app.threat_intelligence.reliability import (
+    OPERATIONAL_FAILURE_STATUS_VALUES,
+    ProviderCircuitBreaker,
+    RetryPolicy,
+    deduplicate_references,
+    execute_lookup_with_reliability,
+    validate_safe_provider_request,
 )
 from app.threat_intelligence.schemas import (
     EnrichedObservable,
@@ -35,6 +42,11 @@ _FAILURE_STATUSES = frozenset(
     {
         ProviderLookupStatusEnum.UNAVAILABLE,
         ProviderLookupStatusEnum.TIMEOUT,
+        ProviderLookupStatusEnum.RATE_LIMITED,
+        ProviderLookupStatusEnum.RETRY_EXHAUSTED,
+        ProviderLookupStatusEnum.CIRCUIT_OPEN,
+        ProviderLookupStatusEnum.PROVIDER_DISABLED,
+        ProviderLookupStatusEnum.INVALID_OBSERVABLE,
         ProviderLookupStatusEnum.MALFORMED_RESPONSE,
         ProviderLookupStatusEnum.FAILED,
     }
@@ -56,8 +68,15 @@ def _resolve_verdict_conservatively(
 
     verdicts = {r.verdict for r in found}
     if (
-        ObservableVerdictEnum.MALICIOUS in verdicts
-        and ObservableVerdictEnum.BENIGN in verdicts
+        (ObservableTypeEnum and False)
+        or (
+            ObservableVerdictEnum.MALICIOUS in verdicts
+            and ObservableVerdictEnum.BENIGN in verdicts
+        )
+        or (
+            ObservableVerdictEnum.SUSPICIOUS in verdicts
+            and ObservableVerdictEnum.BENIGN in verdicts
+        )
     ):
         return (
             ObservableVerdictEnum.UNKNOWN,
@@ -90,11 +109,21 @@ class ThreatIntelObservablePipeline:
         *,
         base_enricher: Optional[DeterministicEventEnricher] = None,
         ti_providers: Optional[Sequence[ThreatIntelProviderProtocol]] = None,
+        retry_policy: Optional[RetryPolicy] = None,
+        circuit_breaker: Optional[ProviderCircuitBreaker] = None,
+        disabled_providers: Optional[Sequence[str]] = None,
     ) -> None:
         self._base_enricher = base_enricher or DeterministicEventEnricher()
         self._ti_providers: List[ThreatIntelProviderProtocol] = (
             list(ti_providers) if ti_providers is not None else [FixtureThreatIntelProvider()]
         )
+        self._retry_policy = retry_policy or RetryPolicy(max_attempts=1)
+        self._circuit_breaker = circuit_breaker or ProviderCircuitBreaker()
+        self._disabled_providers = {p.strip().lower() for p in (disabled_providers or ()) if p and p.strip()}
+
+    @property
+    def circuit_breaker(self) -> ProviderCircuitBreaker:
+        return self._circuit_breaker
 
     def lookup_observable(
         self,
@@ -104,16 +133,14 @@ class ThreatIntelObservablePipeline:
         lookup_timestamp: Optional[str] = None,
     ) -> List[ObservableLookupResult]:
         """
-        Validate a single observable before querying all configured TI providers.
-        Returns one ObservableLookupResult per provider (or a single error result if invalid).
+        Validate a single observable before querying all configured TI providers
+        using unified retry, circuit-breaker, and safe-request enforcement.
         """
         ts = lookup_timestamp or utc_now_iso()
-        is_valid, obs_type, canonical_val, err_msg = validate_observable_for_lookup(
+        is_valid, request, err_msg, is_unsupported_type = validate_safe_provider_request(
             observable_type, value
         )
-        if not is_valid or obs_type is None or canonical_val is None:
-            safe_type = obs_type if obs_type is not None else None
-            # Do not call any provider with malformed input
+        if not is_valid or request is None:
             provider_name = (
                 self._ti_providers[0].provider_name
                 if self._ti_providers
@@ -126,11 +153,11 @@ class ThreatIntelObservablePipeline:
                 ObservableLookupResult(
                     provider_name=provider_name,
                     provider_version=provider_ver,
-                    observable_type=safe_type or ObservableTypeEnum.IP,
+                    observable_type=ObservableTypeEnum.IP,
                     normalized_value="",
-                    lookup_status=ProviderLookupStatusEnum.FAILED
-                    if obs_type is not None
-                    else ProviderLookupStatusEnum.UNSUPPORTED_OBSERVABLE,
+                    lookup_status=ProviderLookupStatusEnum.UNSUPPORTED_OBSERVABLE
+                    if is_unsupported_type
+                    else ProviderLookupStatusEnum.INVALID_OBSERVABLE,
                     verdict=ObservableVerdictEnum.UNKNOWN,
                     confidence=None,
                     evidence={},
@@ -138,10 +165,10 @@ class ThreatIntelObservablePipeline:
                     lookup_timestamp=ts,
                     errors=[
                         ValidationIssue(
-                            category=ValidationErrorCategory.INVALID_SCHEMA_TYPE
-                            if obs_type is not None
-                            else ValidationErrorCategory.UNSUPPORTED_SOURCE_TYPE,
-                            field="normalized_value" if obs_type is not None else "observable_type",
+                            category=ValidationErrorCategory.UNSUPPORTED_SOURCE_TYPE
+                            if is_unsupported_type
+                            else ValidationErrorCategory.INVALID_SCHEMA_TYPE,
+                            field="observable_type" if is_unsupported_type else "normalized_value",
                             message=err_msg or "Rejected invalid observable pre-lookup",
                             severity="error",
                         )
@@ -150,62 +177,24 @@ class ThreatIntelObservablePipeline:
                 )
             ]
 
-        request = ObservableLookupRequest(
-            observable_type=obs_type,
-            normalized_value=canonical_val,
-        )
         results: List[ObservableLookupResult] = []
         for provider in self._ti_providers:
-            if obs_type not in provider.supported_observable_types:
-                results.append(
-                    ObservableLookupResult(
-                        provider_name=provider.provider_name,
-                        provider_version=provider.provider_version,
-                        observable_type=obs_type,
-                        normalized_value=canonical_val,
-                        lookup_status=ProviderLookupStatusEnum.UNSUPPORTED_OBSERVABLE,
-                        verdict=ObservableVerdictEnum.UNKNOWN,
-                        confidence=None,
-                        evidence={},
-                        references=[],
-                        lookup_timestamp=ts,
-                        warnings=[
-                            ValidationIssue(
-                                category=ValidationErrorCategory.UNSUPPORTED_SOURCE_TYPE,
-                                field="observable_type",
-                                message=f"Provider '{provider.provider_name}' does not support '{obs_type.value}'",
-                                severity="warning",
-                            )
-                        ],
-                        live_lookup_performed=False,
-                    )
-                )
-                continue
-
-            try:
-                res = provider.lookup(request, lookup_timestamp=ts)
-            except Exception as exc:
-                res = ObservableLookupResult(
-                    provider_name=provider.provider_name,
-                    provider_version=provider.provider_version,
-                    observable_type=obs_type,
-                    normalized_value=canonical_val,
-                    lookup_status=ProviderLookupStatusEnum.FAILED,
-                    verdict=ObservableVerdictEnum.UNKNOWN,
-                    confidence=None,
-                    evidence={},
-                    references=[],
-                    lookup_timestamp=ts,
-                    errors=[
-                        ValidationIssue(
-                            category=ValidationErrorCategory.INVALID_SCHEMA_TYPE,
-                            field="provider",
-                            message=f"Provider '{provider.provider_name}' raised {type(exc).__name__}",
-                            severity="error",
-                        )
-                    ],
-                    live_lookup_performed=provider.is_live_lookup,
-                )
+            prov_enabled = (
+                provider.provider_name.strip().lower() not in self._disabled_providers
+                and bool(getattr(provider, "is_enabled", True))
+            )
+            res = execute_lookup_with_reliability(
+                provider_name=provider.provider_name,
+                provider_version=provider.provider_version,
+                is_live_lookup=provider.is_live_lookup,
+                enabled=prov_enabled,
+                supported_types=provider.supported_observable_types,
+                request=request,
+                call_fn=lambda req, call_ts, p=provider: p.lookup(req, lookup_timestamp=call_ts),
+                retry_policy=self._retry_policy,
+                circuit_breaker=self._circuit_breaker,
+                lookup_timestamp=ts,
+            )
             results.append(res)
         return results
 
