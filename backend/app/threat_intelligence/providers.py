@@ -13,8 +13,17 @@ import re
 from typing import Any, Dict, FrozenSet, List, Optional, Protocol, Sequence, Tuple, runtime_checkable
 from urllib.parse import urlsplit
 
-import httpx
-from pydantic import SecretStr
+from app.events.schemas import PYDANTIC_V2
+
+try:
+    import httpx
+except ImportError:
+    httpx = None  # type: ignore[assignment]
+
+if PYDANTIC_V2:
+    from pydantic import SecretStr
+else:
+    SecretStr = None  # type: ignore[assignment,misc]
 
 from app.threat_intelligence.schemas import (
     EnrichedObservable,
@@ -315,7 +324,80 @@ _BEARER_HEADER_RE = re.compile(r"(?i)(bearer|apikey|x-apikey|key)\s*[:=]\s*[^\s,
 
 
 class ThreatIntelProviderUnavailableError(RuntimeError):
-    """Raised cleanly when an external TI provider returns HTTP 401/403/429/5xx or transport failure."""
+    """Raised cleanly when an external TI provider returns HTTP 401/403/5xx or transport failure."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool = True,
+        retry_after_seconds: Optional[float] = None,
+        rate_limited: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+        self.retry_after_seconds = retry_after_seconds
+        self.rate_limited = rate_limited
+
+
+class ThreatIntelProviderRateLimitedError(ThreatIntelProviderUnavailableError):
+    """Raised cleanly when an external TI provider returns HTTP 429 rate-limiting."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool = True,
+        retry_after_seconds: Optional[float] = None,
+        rate_limited: bool = True,
+    ) -> None:
+        super().__init__(
+            message,
+            retryable=retryable,
+            retry_after_seconds=retry_after_seconds,
+            rate_limited=rate_limited,
+        )
+
+
+def _parse_retry_after(headers: Any) -> Optional[float]:
+    """Safely parse numeric Retry-After header seconds into a bounded float."""
+    if headers is None:
+        return None
+    raw = headers.get("retry-after") or headers.get("Retry-After")
+    if not raw or not isinstance(raw, str):
+        return None
+    try:
+        seconds = float(raw.strip())
+    except ValueError:
+        return None
+    if seconds <= 0 or seconds != seconds:
+        return None
+    return min(3600.0, seconds)
+
+
+def _raise_for_http_unavailable(provider_label: str, resp: Any) -> None:
+    """Raise ThreatIntelProviderUnavailableError / RateLimitedError with metadata."""
+    status_code = int(resp.status_code)
+    if status_code in (401, 403):
+        raise ThreatIntelProviderUnavailableError(
+            f"{provider_label} HTTP {status_code} response",
+            retryable=False,
+            rate_limited=False,
+        )
+    if status_code == 429:
+        raise ThreatIntelProviderRateLimitedError(
+            f"{provider_label} HTTP 429 rate limit exceeded",
+            retryable=True,
+            retry_after_seconds=_parse_retry_after(getattr(resp, "headers", None)),
+            rate_limited=True,
+        )
+    if status_code >= 500:
+        raise ThreatIntelProviderUnavailableError(
+            f"{provider_label} HTTP {status_code} response",
+            retryable=True,
+            retry_after_seconds=_parse_retry_after(getattr(resp, "headers", None)),
+            rate_limited=False,
+        )
 
 
 def _utc_now_iso() -> str:
@@ -337,7 +419,7 @@ def scrub_secrets(text: Optional[str], secrets: Sequence[Optional[str]] = ()) ->
 def _unwrap_secret(secret: Optional[Any]) -> Optional[str]:
     if secret is None:
         return None
-    if isinstance(secret, SecretStr):
+    if SecretStr is not None and isinstance(secret, SecretStr):
         val = secret.get_secret_value().strip()
         return val or None
     if isinstance(secret, str):
@@ -448,9 +530,7 @@ class VirusTotalProvider:
             }
 
         if resp.status_code in (401, 403, 429) or resp.status_code >= 500:
-            raise ThreatIntelProviderUnavailableError(
-                f"VirusTotal HTTP {resp.status_code} response"
-            )
+            _raise_for_http_unavailable("VirusTotal", resp)
         if resp.status_code >= 400:
             return {
                 "provider": self.provider_id,
@@ -549,9 +629,7 @@ class AbuseIPDBProvider:
             resp = await client.get(f"{self._base_url}/check", headers=headers, params=params)
 
         if resp.status_code in (401, 403, 429) or resp.status_code >= 500:
-            raise ThreatIntelProviderUnavailableError(
-                f"AbuseIPDB HTTP {resp.status_code} response"
-            )
+            _raise_for_http_unavailable("AbuseIPDB", resp)
         if resp.status_code >= 400:
             return {
                 "provider": self.provider_id,
@@ -670,9 +748,7 @@ class GenericHTTPThreatIntelProvider:
                 "live_lookup_performed": True,
             }
         if resp.status_code in (401, 403, 429) or resp.status_code >= 500:
-            raise ThreatIntelProviderUnavailableError(
-                f"Generic TI gateway HTTP {resp.status_code} response"
-            )
+            _raise_for_http_unavailable("Generic TI gateway", resp)
 
         data = resp.json()
         if not isinstance(data, dict):
@@ -743,6 +819,9 @@ class SyncTIProviderAdapter:
     def is_configured(self) -> bool:
         return True
 
+    def is_enabled(self) -> bool:
+        return bool(getattr(self._sync_provider, "is_enabled", True))
+
     async def lookup(self, request: ThreatIntelLookupRequest) -> Dict[str, Any]:
         from app.threat_intelligence.provider_contract import (
             ObservableLookupRequest,
@@ -761,6 +840,11 @@ class SyncTIProviderAdapter:
             ProviderLookupStatusEnum.NO_RESULT: ThreatIntelLookupStatusEnum.NO_DATA,
             ProviderLookupStatusEnum.TIMEOUT: ThreatIntelLookupStatusEnum.TIMEOUT,
             ProviderLookupStatusEnum.UNAVAILABLE: ThreatIntelLookupStatusEnum.UNAVAILABLE,
+            ProviderLookupStatusEnum.RATE_LIMITED: ThreatIntelLookupStatusEnum.RATE_LIMITED,
+            ProviderLookupStatusEnum.RETRY_EXHAUSTED: ThreatIntelLookupStatusEnum.RETRY_EXHAUSTED,
+            ProviderLookupStatusEnum.CIRCUIT_OPEN: ThreatIntelLookupStatusEnum.CIRCUIT_OPEN,
+            ProviderLookupStatusEnum.PROVIDER_DISABLED: ThreatIntelLookupStatusEnum.PROVIDER_DISABLED,
+            ProviderLookupStatusEnum.INVALID_OBSERVABLE: ThreatIntelLookupStatusEnum.INVALID_OBSERVABLE,
             ProviderLookupStatusEnum.MALFORMED_RESPONSE: ThreatIntelLookupStatusEnum.INVALID_RESPONSE,
             ProviderLookupStatusEnum.FAILED: ThreatIntelLookupStatusEnum.INVALID_RESPONSE,
             ProviderLookupStatusEnum.UNSUPPORTED_OBSERVABLE: ThreatIntelLookupStatusEnum.UNSUPPORTED,

@@ -49,9 +49,14 @@ class ProviderLookupStatusEnum(str, Enum):
     FOUND = "found"
     NO_RESULT = "no_result"
     UNSUPPORTED_OBSERVABLE = "unsupported_observable"
+    INVALID_OBSERVABLE = "invalid_observable"
     UNAVAILABLE = "unavailable"
     TIMEOUT = "timeout"
+    RATE_LIMITED = "rate_limited"
     MALFORMED_RESPONSE = "malformed_response"
+    RETRY_EXHAUSTED = "retry_exhausted"
+    CIRCUIT_OPEN = "circuit_open"
+    PROVIDER_DISABLED = "provider_disabled"
     FAILED = "failed"
     SKIPPED = "skipped"
 
@@ -349,6 +354,15 @@ def sanitize_provider_response(
     refs, ref_err = _sanitize_references(raw_response.get("references"))
     if ref_err is not None or refs is None:
         return _malformed(ref_err or "Malformed provider references")
+
+    # Enforce strict evidence invariant when evidence key is explicitly empty on malicious verdict
+    if (
+        verdict == ObservableVerdictEnum.MALICIOUS
+        and "evidence" in raw_response
+        and not sanitized_evidence
+        and not refs
+    ):
+        return _malformed("Malicious verdict requires non-empty supporting evidence or references")
 
     return ObservableLookupResult(
         provider_name=provider_name,

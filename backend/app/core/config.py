@@ -61,6 +61,13 @@ class Settings(BaseSettings):
     TI_MAX_OBSERVABLES_PER_EVENT: int = Field(default=10, ge=1, le=100)
     TI_USE_REDIS_CACHE: bool = True
 
+    # Threat Intelligence Reliability & Circuit Breaker (Day 11)
+    TI_MAX_RETRIES: int = Field(default=2, ge=0, le=5)
+    TI_RETRY_BASE_DELAY_SECONDS: float = Field(default=0.25, ge=0.0, le=10.0)
+    TI_RETRY_MAX_DELAY_SECONDS: float = Field(default=5.0, ge=0.0, le=30.0)
+    TI_CIRCUIT_BREAKER_THRESHOLD: int = Field(default=3, ge=1, le=50)
+    TI_CIRCUIT_BREAKER_COOLDOWN_SECONDS: float = Field(default=60.0, ge=1.0, le=3600.0)
+
     # Optional external TI credentials via environment (never logged or serialized)
     TI_VIRUSTOTAL_API_KEY: Optional[SecretStr] = None
     TI_ABUSEIPDB_API_KEY: Optional[SecretStr] = None
@@ -130,6 +137,10 @@ class Settings(BaseSettings):
                     "SECURITY WARNING: POSTGRES_PASSWORD appears to be a default or "
                     "weak value in production. Rotate immediately."
                 )
+        if self.TI_RETRY_MAX_DELAY_SECONDS < self.TI_RETRY_BASE_DELAY_SECONDS:
+            raise ValueError(
+                "TI_RETRY_MAX_DELAY_SECONDS must be >= TI_RETRY_BASE_DELAY_SECONDS"
+            )
         # Validate LOG_LEVEL is a known Python logging level
         valid_levels = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
         if self.LOG_LEVEL.upper() not in valid_levels:

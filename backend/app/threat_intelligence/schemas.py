@@ -10,10 +10,11 @@ from `app.events.validation` without duplicating schema definitions.
 from enum import Enum
 from typing import Any, Dict, FrozenSet, List, Optional
 
-from pydantic import ConfigDict, field_validator, model_validator
-
-from app.events.schemas import BaseModel, Field
+from app.events.schemas import PYDANTIC_V2, BaseModel, Field
 from app.events.validation import ValidationIssue
+
+if PYDANTIC_V2:
+    from pydantic import ConfigDict, field_validator, model_validator
 
 _FORBIDDEN_TI_KEYS: FrozenSet[str] = frozenset({"raw_payload", "raw_event"})
 
@@ -99,6 +100,11 @@ class ThreatIntelLookupStatusEnum(str, Enum):
     CACHE_HIT = "cache_hit"
     TIMEOUT = "timeout"
     UNAVAILABLE = "unavailable"
+    RATE_LIMITED = "rate_limited"
+    RETRY_EXHAUSTED = "retry_exhausted"
+    CIRCUIT_OPEN = "circuit_open"
+    PROVIDER_DISABLED = "provider_disabled"
+    INVALID_OBSERVABLE = "invalid_observable"
     INVALID_RESPONSE = "invalid_response"
     UNSUPPORTED = "unsupported"
     SKIPPED_LIMIT = "skipped_limit"
@@ -203,7 +209,8 @@ class EnrichedObservable(BaseModel):
 class ThreatIntelLookupRequest(BaseModel):
     """Normalized, bounded request passed to ThreatIntelProviderProtocol implementations."""
 
-    model_config = ConfigDict(extra="forbid")
+    if PYDANTIC_V2:
+        model_config = ConfigDict(extra="forbid")
 
     observable_type: ObservableTypeEnum
     normalized_value: str = Field(min_length=1, max_length=2048)
@@ -219,7 +226,8 @@ class ThreatIntelLookupResult(BaseModel):
     any non-unknown verdict.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    if PYDANTIC_V2:
+        model_config = ConfigDict(extra="forbid")
 
     provider: str = Field(min_length=1, max_length=64)
     provider_version: str = Field(min_length=1, max_length=32)
@@ -238,22 +246,34 @@ class ThreatIntelLookupResult(BaseModel):
     cache_hit: bool = False
     error_message: Optional[str] = Field(default=None, max_length=256)
 
-    @field_validator("categories")
-    @classmethod
-    def validate_categories(cls, value: List[str]) -> List[str]:
-        cleaned: List[str] = []
-        for item in value[:20]:
-            text = str(item).strip()
-            if text and text not in cleaned:
-                cleaned.append(text[:64])
-        return cleaned
+    if PYDANTIC_V2:
 
-    @model_validator(mode="after")
-    def enforce_evidence_and_no_raw_leakage(self) -> "ThreatIntelLookupResult":
+        @field_validator("categories")
+        @classmethod
+        def validate_categories(cls, value: List[str]) -> List[str]:
+            cleaned: List[str] = []
+            for item in value[:20]:
+                text = str(item).strip()
+                if text and text not in cleaned:
+                    cleaned.append(text[:64])
+            return cleaned
+
+        @model_validator(mode="after")
+        def enforce_evidence_and_no_raw_leakage(self) -> "ThreatIntelLookupResult":
+            self._check_invariants()
+            return self
+
+    else:
+
+        def __init__(self, **data: Any) -> None:
+            super().__init__(**data)
+            self._check_invariants()
+
+    def _check_invariants(self) -> None:
         if contains_forbidden_ti_keys(self.attributes):
             raise ValueError("Forbidden raw payload key found in TI attributes")
         if self.verdict != ObservableVerdictEnum.UNKNOWN:
-            if not self.evidence or not self.evidence.strip():
+            if not self.evidence or not str(self.evidence).strip():
                 raise ValueError(
                     f"Non-unknown verdict '{self.verdict.value}' requires supporting evidence"
                 )
@@ -262,9 +282,8 @@ class ThreatIntelLookupResult(BaseModel):
                 ThreatIntelLookupStatusEnum.CACHE_HIT,
             ):
                 raise ValueError(
-                    f"Non-unknown verdict requires success or cache_hit status, got {self.lookup_status.value!r}"
+                    f"Non-unknown verdict requires success or cache_hit status, got {self.lookup_status!r}"
                 )
-        return self
 
 
 class EventEnrichmentResult(BaseModel):

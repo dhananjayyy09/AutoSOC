@@ -292,7 +292,7 @@ export interface ObservableProvenance {
   live_lookup_performed?: boolean;
 }
 
-/** Lookup lifecycle statuses returned by TI provider integrations (Day 10). */
+/** Lookup lifecycle statuses returned by TI provider integrations (Day 10-11). */
 export type ThreatIntelLookupStatus =
   | "not_queried"
   | "offline_only"
@@ -306,6 +306,12 @@ export type ThreatIntelLookupStatus =
   | "timeout"
   | "provider_unavailable"
   | "unavailable"
+  | "rate_limited"
+  | "retry_exhausted"
+  | "circuit_open"
+  | "circuit_breaker_open"
+  | "provider_disabled"
+  | "invalid_observable"
   | "failed"
   | "invalid_response"
   | "malformed_response"
@@ -314,6 +320,55 @@ export type ThreatIntelLookupStatus =
   | "skipped"
   | "skipped_limit"
   | (string & {});
+
+/** Operational health states for TI providers (Day 11). */
+export type ThreatIntelProviderHealthStatus =
+  | "healthy"
+  | "degraded"
+  | "rate_limited"
+  | "circuit_open"
+  | "unavailable"
+  | "disabled"
+  | "unconfigured"
+  | (string & {});
+
+/** Circuit-breaker states for external TI providers (Day 11). */
+export type ThreatIntelCircuitState =
+  | "closed"
+  | "open"
+  | "half_open"
+  | (string & {});
+
+/** Safe operational status record for a configured TI provider (Day 11). */
+export interface ThreatIntelProviderStatus {
+  provider_id: string;
+  provider_name?: string | null;
+  provider_version?: string | null;
+  enabled: boolean;
+  configured?: boolean | null;
+  status: ThreatIntelProviderHealthStatus;
+  circuit_breaker_state?: ThreatIntelCircuitState | null;
+  consecutive_failures?: number | null;
+  total_requests?: number | null;
+  total_failures?: number | null;
+  last_success_at?: string | null;
+  last_failure_at?: string | null;
+  failure_category?: string | null;
+  cooldown_remaining_seconds?: number | null;
+  last_error_summary?: string | null;
+  is_live?: boolean | null;
+  retry_count?: number | null;
+  retry_exhausted?: boolean | null;
+}
+
+/** Envelope returned by fetchThreatIntelProvidersStatus() (Day 11). */
+export interface ThreatIntelProvidersStatusResult {
+  supported: boolean;
+  ti_enabled?: boolean;
+  policy?: Record<string, unknown> | null;
+  providers: ThreatIntelProviderStatus[];
+  generated_at?: string | null;
+}
 
 /** Reference link/record supplied by a TI provider. */
 export interface ObservableReference {
@@ -339,6 +394,9 @@ export interface EventObservableEnrichment {
   confidence?: number | null;
   cached?: boolean | null;
   live_lookup_performed?: boolean | null;
+  failure_category?: string | null;
+  retry_count?: number | null;
+  retry_exhausted?: boolean | null;
   references?: ObservableReference[];
   tags?: string[];
   provenance?: ObservableProvenance | string | null;

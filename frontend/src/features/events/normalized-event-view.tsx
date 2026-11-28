@@ -18,6 +18,9 @@ interface NormalizedEventViewProps {
   isLoading?: boolean
   error?: string | null
   onRetry?: () => void
+  onRetryEnrichment?: (eventId: string) => void
+  isRetryingEnrichment?: boolean
+  retryEnrichmentError?: string | null
 }
 
 function mapNumericSeverity(severity: number | null | undefined): SeverityLevel | null {
@@ -62,6 +65,9 @@ export function NormalizedEventView({
   isLoading = false,
   error = null,
   onRetry,
+  onRetryEnrichment,
+  isRetryingEnrichment = false,
+  retryEnrichmentError = null,
 }: NormalizedEventViewProps) {
   if (!rawEnvelope && !normalizedEvent && !isLoading && !error) {
     return (
@@ -243,6 +249,13 @@ export function NormalizedEventView({
           <EnrichmentContextPanel
             enrichment={normalizedEvent.enrichment}
             enrichmentStatus={normalizedEvent.enrichment_status}
+            onRetryEnrichment={
+              onRetryEnrichment && normalizedEvent.event_id
+                ? () => onRetryEnrichment(normalizedEvent.event_id!)
+                : undefined
+            }
+            isRetryingEnrichment={isRetryingEnrichment}
+            retryEnrichmentError={retryEnrichmentError}
           />
         )}
       </CardContent>
