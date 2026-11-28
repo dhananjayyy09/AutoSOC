@@ -256,15 +256,56 @@ class DeterministicEventEnricher:
     """
 
     def __init__(
-        self, provider: Optional[EnrichmentProviderProtocol] = None
+        self,
+        provider: Optional[EnrichmentProviderProtocol] = None,
+        ti_orchestrator: Optional[Any] = None,
     ) -> None:
         self._provider: EnrichmentProviderProtocol = (
             provider or DeterministicLocalEnrichmentProvider()
         )
+        self._ti_orchestrator = ti_orchestrator
 
-    async def enrich(self, normalized_event: Dict[str, Any]) -> Dict[str, Any]:
-        """EventEnricherProtocol-compliant async adapter returning serialized EventEnrichmentResult."""
+    async def enrich(
+        self,
+        normalized_event: Dict[str, Any],
+        *,
+        ti_orchestrator: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """
+        EventEnricherProtocol-compliant async adapter running deterministic local
+        enrichment and optional configured ThreatIntelOrchestrator lookups.
+        """
         result = self.enrich_event(normalized_event)
+        orchestrator = ti_orchestrator if ti_orchestrator is not None else self._ti_orchestrator
+        if (
+            orchestrator is not None
+            and result.observables
+            and result.enrichment_status
+            in (EnrichmentStatusEnum.ENRICHED, EnrichmentStatusEnum.ENRICHED_PARTIAL)
+        ):
+            outcome = await orchestrator.enrich_observables(
+                result.observables,
+                ingestion_id=str(result.ingestion_id or ""),
+                source_event_id=result.source_event_id,
+            )
+            status = result.enrichment_status
+            if status == EnrichmentStatusEnum.ENRICHED and outcome.has_partial_failures:
+                status = EnrichmentStatusEnum.ENRICHED_PARTIAL
+            merged_warnings = list(result.warnings) + list(outcome.warnings)
+            result = result.model_copy(
+                update={
+                    "enrichment_status": status,
+                    "live_lookup_performed": bool(
+                        result.live_lookup_performed or outcome.live_lookup_performed
+                    ),
+                    "observables": outcome.observables,
+                    "warnings": merged_warnings,
+                }
+            )
+            dumped = result.model_dump()
+            if outcome.threat_intel_context is not None:
+                dumped["threat_intel_context"] = outcome.threat_intel_context
+            return dumped
         return result.model_dump()
 
     def enrich_event(

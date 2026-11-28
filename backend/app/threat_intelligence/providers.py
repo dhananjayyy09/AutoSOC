@@ -6,9 +6,15 @@ intelligence sources and implements `DeterministicLocalEnrichmentProvider`
 using strictly local, network-free, deterministic classification rules.
 """
 
+import base64
+from datetime import datetime, timezone
 import ipaddress
-from typing import Any, Dict, List, Optional, Protocol, Tuple, runtime_checkable
+import re
+from typing import Any, Dict, FrozenSet, List, Optional, Protocol, Sequence, Tuple, runtime_checkable
 from urllib.parse import urlsplit
+
+import httpx
+from pydantic import SecretStr
 
 from app.threat_intelligence.schemas import (
     EnrichedObservable,
@@ -16,6 +22,8 @@ from app.threat_intelligence.schemas import (
     ObservableClassificationEnum,
     ObservableTypeEnum,
     ObservableVerdictEnum,
+    ThreatIntelLookupRequest,
+    ThreatIntelLookupStatusEnum,
 )
 
 # RFC 5737 (IPv4) & RFC 3849 (IPv6) documentation/test address ranges
@@ -297,3 +305,518 @@ class DeterministicLocalEnrichmentProvider:
             context=context,
             provenance=provenance,
         )
+
+
+# ---------------------------------------------------------------------------
+# Day 10 External Threat Intelligence Provider Abstraction & Adapters
+# ---------------------------------------------------------------------------
+
+_BEARER_HEADER_RE = re.compile(r"(?i)(bearer|apikey|x-apikey|key)\s*[:=]\s*[^\s,;]+")
+
+
+class ThreatIntelProviderUnavailableError(RuntimeError):
+    """Raised cleanly when an external TI provider returns HTTP 401/403/429/5xx or transport failure."""
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def scrub_secrets(text: Optional[str], secrets: Sequence[Optional[str]] = ()) -> Optional[str]:
+    """Redact configured API credentials and authorization fragments from messages."""
+    if not text:
+        return text
+    cleaned = str(text)
+    for secret in secrets:
+        if secret and len(secret) >= 4:
+            cleaned = cleaned.replace(secret, "[REDACTED]")
+    cleaned = _BEARER_HEADER_RE.sub(r"\1=[REDACTED]", cleaned)
+    return cleaned[:256]
+
+
+def _unwrap_secret(secret: Optional[Any]) -> Optional[str]:
+    if secret is None:
+        return None
+    if isinstance(secret, SecretStr):
+        val = secret.get_secret_value().strip()
+        return val or None
+    if isinstance(secret, str):
+        val = secret.strip()
+        return val or None
+    return None
+
+
+@runtime_checkable
+class ThreatIntelProviderProtocol(Protocol):
+    """
+    Day 10 async interface for configurable external Threat Intelligence providers.
+    Implementations must return raw unvalidated dictionaries matching
+    `ThreatIntelLookupResult`, never execute observables, and never leak credentials.
+    """
+
+    @property
+    def provider_id(self) -> str:
+        """Unique stable lowercase identifier (e.g. 'virustotal', 'abuseipdb')."""
+        ...
+
+    @property
+    def provider_version(self) -> str:
+        """API/adapter version string."""
+        ...
+
+    def supports_observable(self, observable_type: ObservableTypeEnum) -> bool:
+        """Return True if this provider supports querying the observable type."""
+        ...
+
+    def is_configured(self) -> bool:
+        """Return True when required credentials/endpoints are configured."""
+        ...
+
+    async def lookup(self, request: ThreatIntelLookupRequest) -> Dict[str, Any]:
+        """Execute lookup for a single normalized observable within request.timeout_seconds."""
+        ...
+
+
+class VirusTotalProvider:
+    """Async VirusTotal API v3 adapter supporting IP, domain, URL, and file hash lookups."""
+
+    _SUPPORTED: FrozenSet[ObservableTypeEnum] = frozenset(
+        {
+            ObservableTypeEnum.IP,
+            ObservableTypeEnum.DOMAIN,
+            ObservableTypeEnum.URL,
+            ObservableTypeEnum.FILE_HASH,
+        }
+    )
+
+    def __init__(self, api_key: Optional[Any] = None, *, base_url: str = "https://www.virustotal.com/api/v3") -> None:
+        self._api_key = api_key
+        self._base_url = base_url.rstrip("/")
+
+    @property
+    def provider_id(self) -> str:
+        return "virustotal"
+
+    @property
+    def provider_version(self) -> str:
+        return "v3"
+
+    def supports_observable(self, observable_type: ObservableTypeEnum) -> bool:
+        return observable_type in self._SUPPORTED
+
+    def is_configured(self) -> bool:
+        return _unwrap_secret(self._api_key) is not None
+
+    def secret_values(self) -> List[str]:
+        val = _unwrap_secret(self._api_key)
+        return [val] if val else []
+
+    def _build_path(self, observable_type: ObservableTypeEnum, normalized_value: str) -> str:
+        if observable_type == ObservableTypeEnum.IP:
+            return f"/ip_addresses/{normalized_value}"
+        if observable_type == ObservableTypeEnum.DOMAIN:
+            return f"/domains/{normalized_value}"
+        if observable_type == ObservableTypeEnum.FILE_HASH:
+            digest = normalized_value.split(":", 1)[1] if ":" in normalized_value else normalized_value
+            return f"/files/{digest}"
+        url_id = base64.urlsafe_b64encode(normalized_value.encode("utf-8")).decode("ascii").rstrip("=")
+        return f"/urls/{url_id}"
+
+    async def lookup(self, request: ThreatIntelLookupRequest) -> Dict[str, Any]:
+        api_key = _unwrap_secret(self._api_key)
+        if not api_key:
+            raise ThreatIntelProviderUnavailableError("VirusTotal API key is not configured")
+
+        path = self._build_path(request.observable_type, request.normalized_value)
+        url = f"{self._base_url}{path}"
+        headers = {"x-apikey": api_key, "Accept": "application/json"}
+
+        async with httpx.AsyncClient(timeout=request.timeout_seconds, follow_redirects=False) as client:
+            resp = await client.get(url, headers=headers)
+
+        if resp.status_code == 404:
+            return {
+                "provider": self.provider_id,
+                "provider_version": self.provider_version,
+                "observable_type": request.observable_type.value,
+                "normalized_value": request.normalized_value,
+                "lookup_status": ThreatIntelLookupStatusEnum.NO_DATA.value,
+                "verdict": ObservableVerdictEnum.UNKNOWN.value,
+                "evidence": "VirusTotal returned no existing record (404)",
+                "lookup_timestamp": _utc_now_iso(),
+                "live_lookup_performed": True,
+            }
+
+        if resp.status_code in (401, 403, 429) or resp.status_code >= 500:
+            raise ThreatIntelProviderUnavailableError(
+                f"VirusTotal HTTP {resp.status_code} response"
+            )
+        if resp.status_code >= 400:
+            return {
+                "provider": self.provider_id,
+                "provider_version": self.provider_version,
+                "observable_type": request.observable_type.value,
+                "normalized_value": request.normalized_value,
+                "lookup_status": ThreatIntelLookupStatusEnum.INVALID_RESPONSE.value,
+                "verdict": ObservableVerdictEnum.UNKNOWN.value,
+                "error_message": f"VirusTotal rejected query with HTTP {resp.status_code}",
+                "lookup_timestamp": _utc_now_iso(),
+                "live_lookup_performed": True,
+            }
+
+        payload = resp.json()
+        attrs = ((payload.get("data") or {}).get("attributes") or {}) if isinstance(payload, dict) else {}
+        stats = attrs.get("last_analysis_stats") or {}
+        malicious = int(stats.get("malicious", 0) or 0)
+        suspicious = int(stats.get("suspicious", 0) or 0)
+        harmless = int(stats.get("harmless", 0) or 0)
+        undetected = int(stats.get("undetected", 0) or 0)
+        total = malicious + suspicious + harmless + undetected
+
+        if malicious >= 2:
+            verdict = ObservableVerdictEnum.MALICIOUS
+        elif malicious == 1 or suspicious >= 2:
+            verdict = ObservableVerdictEnum.SUSPICIOUS
+        elif total > 0 and malicious == 0 and suspicious == 0 and harmless > 0:
+            verdict = ObservableVerdictEnum.BENIGN
+        else:
+            verdict = ObservableVerdictEnum.UNKNOWN
+
+        confidence = round(min(1.0, (malicious + 0.5 * suspicious) / max(1, total)), 3) if total > 0 else None
+        score = min(100, int(round(((malicious * 100) + (suspicious * 50)) / max(1, total)))) if total > 0 else None
+        raw_cats = attrs.get("categories") or {}
+        categories = list(dict.fromkeys(str(v) for v in raw_cats.values()))[:10] if isinstance(raw_cats, dict) else []
+
+        return {
+            "provider": self.provider_id,
+            "provider_version": self.provider_version,
+            "observable_type": request.observable_type.value,
+            "normalized_value": request.normalized_value,
+            "lookup_status": ThreatIntelLookupStatusEnum.SUCCESS.value,
+            "verdict": verdict.value,
+            "confidence": confidence,
+            "score": score,
+            "categories": categories,
+            "evidence": (
+                f"VirusTotal stats: {malicious} malicious, {suspicious} suspicious, "
+                f"{harmless} harmless of {total} engines"
+            ),
+            "attributes": {
+                "malicious_count": malicious,
+                "suspicious_count": suspicious,
+                "harmless_count": harmless,
+                "total_engines": total,
+            },
+            "lookup_timestamp": _utc_now_iso(),
+            "live_lookup_performed": True,
+        }
+
+
+class AbuseIPDBProvider:
+    """Async AbuseIPDB v2 adapter supporting IP reputation lookups."""
+
+    def __init__(self, api_key: Optional[Any] = None, *, base_url: str = "https://api.abuseipdb.com/api/v2") -> None:
+        self._api_key = api_key
+        self._base_url = base_url.rstrip("/")
+
+    @property
+    def provider_id(self) -> str:
+        return "abuseipdb"
+
+    @property
+    def provider_version(self) -> str:
+        return "v2"
+
+    def supports_observable(self, observable_type: ObservableTypeEnum) -> bool:
+        return observable_type == ObservableTypeEnum.IP
+
+    def is_configured(self) -> bool:
+        return _unwrap_secret(self._api_key) is not None
+
+    def secret_values(self) -> List[str]:
+        val = _unwrap_secret(self._api_key)
+        return [val] if val else []
+
+    async def lookup(self, request: ThreatIntelLookupRequest) -> Dict[str, Any]:
+        api_key = _unwrap_secret(self._api_key)
+        if not api_key:
+            raise ThreatIntelProviderUnavailableError("AbuseIPDB API key is not configured")
+
+        headers = {"Key": api_key, "Accept": "application/json"}
+        params = {"ipAddress": request.normalized_value, "maxAgeInDays": "90"}
+
+        async with httpx.AsyncClient(timeout=request.timeout_seconds, follow_redirects=False) as client:
+            resp = await client.get(f"{self._base_url}/check", headers=headers, params=params)
+
+        if resp.status_code in (401, 403, 429) or resp.status_code >= 500:
+            raise ThreatIntelProviderUnavailableError(
+                f"AbuseIPDB HTTP {resp.status_code} response"
+            )
+        if resp.status_code >= 400:
+            return {
+                "provider": self.provider_id,
+                "provider_version": self.provider_version,
+                "observable_type": request.observable_type.value,
+                "normalized_value": request.normalized_value,
+                "lookup_status": ThreatIntelLookupStatusEnum.INVALID_RESPONSE.value,
+                "verdict": ObservableVerdictEnum.UNKNOWN.value,
+                "error_message": f"AbuseIPDB rejected query with HTTP {resp.status_code}",
+                "lookup_timestamp": _utc_now_iso(),
+                "live_lookup_performed": True,
+            }
+
+        payload = resp.json()
+        data = (payload.get("data") or {}) if isinstance(payload, dict) else {}
+        abuse_score = int(data.get("abuseConfidenceScore", 0) or 0)
+        total_reports = int(data.get("totalReports", 0) or 0)
+
+        if total_reports > 0 and abuse_score >= 75:
+            verdict = ObservableVerdictEnum.MALICIOUS
+        elif total_reports > 0 and abuse_score >= 25:
+            verdict = ObservableVerdictEnum.SUSPICIOUS
+        else:
+            verdict = ObservableVerdictEnum.UNKNOWN
+
+        categories = []
+        if data.get("usageType"):
+            categories.append(str(data["usageType"]))
+        if data.get("isp"):
+            categories.append(str(data["isp"]))
+
+        return {
+            "provider": self.provider_id,
+            "provider_version": self.provider_version,
+            "observable_type": request.observable_type.value,
+            "normalized_value": request.normalized_value,
+            "lookup_status": ThreatIntelLookupStatusEnum.SUCCESS.value,
+            "verdict": verdict.value,
+            "confidence": round(max(0.0, min(1.0, abuse_score / 100.0)), 3),
+            "score": max(0, min(100, abuse_score)),
+            "categories": categories,
+            "evidence": (
+                f"AbuseIPDB confidence {abuse_score}% across {total_reports} reports"
+                + (f" ({data.get('countryCode')})" if data.get("countryCode") else "")
+            ),
+            "attributes": {
+                "total_reports": total_reports,
+                "country_code": data.get("countryCode"),
+                "is_whitelisted": data.get("isWhitelisted"),
+            },
+            "lookup_timestamp": _utc_now_iso(),
+            "live_lookup_performed": True,
+        }
+
+
+class GenericHTTPThreatIntelProvider:
+    """Configurable HTTP TI provider adapter for custom enterprise TI gateways."""
+
+    _SUPPORTED: FrozenSet[ObservableTypeEnum] = frozenset(
+        {
+            ObservableTypeEnum.IP,
+            ObservableTypeEnum.DOMAIN,
+            ObservableTypeEnum.URL,
+            ObservableTypeEnum.FILE_HASH,
+        }
+    )
+
+    def __init__(self, *, base_url: Optional[str] = None, api_key: Optional[Any] = None) -> None:
+        self._base_url = base_url.rstrip("/") if isinstance(base_url, str) and base_url.strip() else None
+        self._api_key = api_key
+
+    @property
+    def provider_id(self) -> str:
+        return "generic_http"
+
+    @property
+    def provider_version(self) -> str:
+        return "v1"
+
+    def supports_observable(self, observable_type: ObservableTypeEnum) -> bool:
+        return observable_type in self._SUPPORTED
+
+    def is_configured(self) -> bool:
+        return self._base_url is not None
+
+    def secret_values(self) -> List[str]:
+        val = _unwrap_secret(self._api_key)
+        return [val] if val else []
+
+    async def lookup(self, request: ThreatIntelLookupRequest) -> Dict[str, Any]:
+        if not self._base_url:
+            raise ThreatIntelProviderUnavailableError("Generic TI base URL is not configured")
+
+        headers: Dict[str, str] = {"Accept": "application/json"}
+        api_key = _unwrap_secret(self._api_key)
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        params = {
+            "type": request.observable_type.value,
+            "value": request.normalized_value,
+        }
+        async with httpx.AsyncClient(timeout=request.timeout_seconds, follow_redirects=False) as client:
+            resp = await client.get(f"{self._base_url}/lookup", headers=headers, params=params)
+
+        if resp.status_code == 404:
+            return {
+                "provider": self.provider_id,
+                "provider_version": self.provider_version,
+                "observable_type": request.observable_type.value,
+                "normalized_value": request.normalized_value,
+                "lookup_status": ThreatIntelLookupStatusEnum.NO_DATA.value,
+                "verdict": ObservableVerdictEnum.UNKNOWN.value,
+                "evidence": "Generic TI gateway returned no record (404)",
+                "lookup_timestamp": _utc_now_iso(),
+                "live_lookup_performed": True,
+            }
+        if resp.status_code in (401, 403, 429) or resp.status_code >= 500:
+            raise ThreatIntelProviderUnavailableError(
+                f"Generic TI gateway HTTP {resp.status_code} response"
+            )
+
+        data = resp.json()
+        if not isinstance(data, dict):
+            raise ValueError("Generic TI gateway payload must be a JSON object")
+        return {
+            "provider": self.provider_id,
+            "provider_version": self.provider_version,
+            "observable_type": request.observable_type.value,
+            "normalized_value": request.normalized_value,
+            "lookup_status": data.get("lookup_status", ThreatIntelLookupStatusEnum.SUCCESS.value),
+            "verdict": data.get("verdict", ObservableVerdictEnum.UNKNOWN.value),
+            "confidence": data.get("confidence"),
+            "evidence": data.get("evidence"),
+            "categories": data.get("categories") or [],
+            "score": data.get("score"),
+            "attributes": data.get("attributes") or {},
+            "lookup_timestamp": data.get("lookup_timestamp") or _utc_now_iso(),
+            "live_lookup_performed": True,
+        }
+
+
+def _format_sync_evidence(evidence: Dict[str, Any], errors: Sequence[Any], provider_name: str) -> Optional[str]:
+    if errors:
+        first_msg = getattr(errors[0], "message", None)
+        if isinstance(first_msg, str) and first_msg.strip():
+            return first_msg.strip()[:512]
+    if not isinstance(evidence, dict) or not evidence:
+        return None
+    parts: List[str] = []
+    if isinstance(evidence.get("note"), str) and evidence["note"].strip():
+        parts.append(evidence["note"].strip())
+    if isinstance(evidence.get("fixture_id"), str) and evidence["fixture_id"].strip():
+        parts.append(f"fixture={evidence['fixture_id'].strip()}")
+    if isinstance(evidence.get("categories"), list) and evidence["categories"]:
+        cats = ", ".join(str(c) for c in evidence["categories"][:5])
+        parts.append(f"categories={cats}")
+    if not parts:
+        parts.append(f"{provider_name} supplied structured attributes ({len(evidence)} keys)")
+    return "; ".join(parts)[:512]
+
+
+class SyncTIProviderAdapter:
+    """
+    Explicit bridge adapting Pranjal's synchronous `provider_contract.ThreatIntelProviderProtocol`
+    (e.g., `FixtureThreatIntelProvider`) into DJ's async `ThreatIntelOrchestrator` path.
+    Preserves `is_live_lookup` (False for synthetic/mock fixtures), strict observable-only
+    requests, references, and conservative verdict semantics.
+    """
+
+    def __init__(self, sync_provider: Any) -> None:
+        self._sync_provider = sync_provider
+
+    @property
+    def provider_id(self) -> str:
+        return str(self._sync_provider.provider_name)
+
+    @property
+    def provider_version(self) -> str:
+        return str(self._sync_provider.provider_version)
+
+    @property
+    def is_live_lookup(self) -> bool:
+        return bool(self._sync_provider.is_live_lookup)
+
+    def supports_observable(self, observable_type: ObservableTypeEnum) -> bool:
+        return observable_type in self._sync_provider.supported_observable_types
+
+    def is_configured(self) -> bool:
+        return True
+
+    async def lookup(self, request: ThreatIntelLookupRequest) -> Dict[str, Any]:
+        from app.threat_intelligence.provider_contract import (
+            ObservableLookupRequest,
+            ProviderLookupStatusEnum,
+        )
+
+        # Pass strictly minimal observable-only request (never event IDs, raw payloads, or secrets)
+        sync_req = ObservableLookupRequest(
+            observable_type=request.observable_type,
+            normalized_value=request.normalized_value,
+        )
+        res = self._sync_provider.lookup(sync_req)
+
+        status_map = {
+            ProviderLookupStatusEnum.FOUND: ThreatIntelLookupStatusEnum.SUCCESS,
+            ProviderLookupStatusEnum.NO_RESULT: ThreatIntelLookupStatusEnum.NO_DATA,
+            ProviderLookupStatusEnum.TIMEOUT: ThreatIntelLookupStatusEnum.TIMEOUT,
+            ProviderLookupStatusEnum.UNAVAILABLE: ThreatIntelLookupStatusEnum.UNAVAILABLE,
+            ProviderLookupStatusEnum.MALFORMED_RESPONSE: ThreatIntelLookupStatusEnum.INVALID_RESPONSE,
+            ProviderLookupStatusEnum.FAILED: ThreatIntelLookupStatusEnum.INVALID_RESPONSE,
+            ProviderLookupStatusEnum.UNSUPPORTED_OBSERVABLE: ThreatIntelLookupStatusEnum.UNSUPPORTED,
+            ProviderLookupStatusEnum.SKIPPED: ThreatIntelLookupStatusEnum.SKIPPED_LIMIT,
+        }
+        mapped_status = status_map.get(
+            res.lookup_status, ThreatIntelLookupStatusEnum.INVALID_RESPONSE
+        )
+        evidence_text = _format_sync_evidence(res.evidence, res.errors, self.provider_id)
+        if res.verdict != ObservableVerdictEnum.UNKNOWN and not evidence_text:
+            evidence_text = f"{self.provider_id} returned verdict '{res.verdict.value}'"
+
+        categories: List[str] = []
+        if isinstance(res.evidence, dict) and isinstance(res.evidence.get("categories"), list):
+            categories = [str(c) for c in res.evidence["categories"][:20]]
+
+        score: Optional[int] = None
+        if res.confidence is not None:
+            score = max(0, min(100, int(round(res.confidence * 100))))
+
+        error_msg = res.errors[0].message[:256] if res.errors else None
+        return {
+            "provider": res.provider_name,
+            "provider_version": res.provider_version,
+            "observable_type": res.observable_type.value,
+            "normalized_value": res.normalized_value,
+            "lookup_status": mapped_status.value,
+            "verdict": res.verdict.value,
+            "confidence": res.confidence,
+            "evidence": evidence_text,
+            "references": [ref.model_dump() for ref in (res.references or [])],
+            "categories": categories,
+            "score": score,
+            "attributes": dict(res.evidence or {}),
+            "lookup_timestamp": res.lookup_timestamp,
+            "live_lookup_performed": bool(res.live_lookup_performed),
+            "error_message": error_msg,
+        }
+
+
+def build_configured_ti_providers(app_settings: Any) -> Dict[str, ThreatIntelProviderProtocol]:
+    """Instantiate built-in live & deterministic fixture TI adapters from validated Settings."""
+    from app.threat_intelligence.mock_adapter import FixtureThreatIntelProvider
+
+    vt = VirusTotalProvider(api_key=getattr(app_settings, "TI_VIRUSTOTAL_API_KEY", None))
+    abuse = AbuseIPDBProvider(api_key=getattr(app_settings, "TI_ABUSEIPDB_API_KEY", None))
+    generic = GenericHTTPThreatIntelProvider(
+        base_url=getattr(app_settings, "TI_GENERIC_BASE_URL", None),
+        api_key=getattr(app_settings, "TI_GENERIC_API_KEY", None),
+    )
+    fixture_adapter = SyncTIProviderAdapter(FixtureThreatIntelProvider())
+    return {
+        vt.provider_id: vt,
+        abuse.provider_id: abuse,
+        generic.provider_id: generic,
+        "fixture": fixture_adapter,
+        "mock": fixture_adapter,
+        fixture_adapter.provider_id: fixture_adapter,
+    }

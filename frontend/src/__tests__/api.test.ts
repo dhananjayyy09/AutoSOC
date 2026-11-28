@@ -699,4 +699,160 @@ describe('fetchNormalizedEvents & fetchNormalizedEventById', () => {
     expect(res.enrichment?.observables?.[0].source_field).toBe('source_ip')
     expect(res.enrichment?.observables?.[0].enriched_at).toBe('2026-11-26T18:00:02Z')
   })
+
+  it('maps Day 10 provider-backed TI lookup fields when present', async () => {
+    const backendItem = {
+      event_id: 'evt-ti-map',
+      ingestion_id: 'ing-ti-map',
+      raw_envelope_id: 10,
+      timestamp: '2026-11-28T10:00:00Z',
+      source_type: 'suricata',
+      sensor_id: 'sensor-01',
+      event_category: 'network',
+      event_type: 'network.alert',
+      host: 'edge-01',
+      severity: 4,
+      metadata: {},
+      normalization_status: 'normalized',
+      normalization_errors: [],
+      normalization_warnings: [],
+      enrichment_status: 'enriched',
+      enrichment: {
+        status: 'enriched',
+        live_lookup_performed: true,
+        enriched_at: '2026-11-28T10:00:01Z',
+        context: {
+          threat_intel: {
+            status: 'completed',
+            provider: 'abuseipdb',
+            cached: true,
+            confidence: 0.9,
+            lookup_timestamp: '2026-11-28T10:00:02Z',
+            evidence_summary: 'Matched known scanner',
+            sources: ['abuseipdb'],
+          },
+        },
+        observables: [
+          {
+            observable_type: 'ip',
+            normalized_value: '203.0.113.88',
+            original_value: '203.0.113.88',
+            classification: 'public_routable',
+            verdict: 'suspicious',
+            provider: 'abuseipdb',
+            lookup_status: 'completed',
+            lookup_timestamp: '2026-11-28T10:00:02Z',
+            evidence_summary: 'Matched known scanner',
+            confidence: 0.9,
+            cached: true,
+            live_lookup_performed: true,
+            provenance: {
+              source_fields: ['source_ip'],
+              method: 'live_reputation_lookup',
+              evidence: 'Matched known scanner',
+            },
+          },
+        ],
+      },
+      created_at: '2026-11-28T10:00:00Z',
+    }
+    ;(global.fetch as jest.Mock).mockResolvedValueOnce({ ok: true, json: async () => backendItem })
+
+    const res = await fetchNormalizedEventById('evt-ti-map')
+    const obs = res.enrichment?.observables?.[0]
+    expect(obs?.lookup_status).toBe('completed')
+    expect(obs?.confidence).toBe(0.9)
+    expect(obs?.cached).toBe(true)
+    expect(obs?.lookup_timestamp).toBe('2026-11-28T10:00:02Z')
+    expect(obs?.evidence_summary).toBe('Matched known scanner')
+    expect(res.enrichment?.context?.threat_intel?.cached).toBe(true)
+    expect(res.enrichment?.context?.threat_intel?.confidence).toBe(0.9)
+  })
+
+  it('maps reconciled backend context.threat_intel cache_hits/providers_queried and observable references', async () => {
+    const backendItem = {
+      event_id: 'evt-ti-reconciled',
+      ingestion_id: 'ing-ti-reconciled',
+      raw_envelope_id: 11,
+      timestamp: '2026-11-28T10:30:00Z',
+      source_type: 'suricata',
+      sensor_id: 'sensor-02',
+      event_category: 'alert',
+      event_type: 'alert.ids',
+      host: 'fw-02',
+      severity: 5,
+      metadata: {},
+      normalization_status: 'normalized',
+      normalization_errors: [],
+      normalization_warnings: [],
+      enrichment_status: 'enriched',
+      enrichment: {
+        enrichment_id: 'enr-rec-1',
+        event_id: 'evt-ti-reconciled',
+        ingestion_id: 'ing-ti-reconciled',
+        provider: 'autosoc.deterministic_local',
+        provider_version: '0.1.0',
+        enrichment_status: 'enriched',
+        live_lookup_performed: false,
+        observable_count: 1,
+        observables: [
+          {
+            observable_type: 'ip',
+            normalized_value: '203.0.113.99',
+            original_value: '203.0.113.99',
+            classification: 'documentation_test',
+            verdict: 'malicious',
+            confidence: 0.92,
+            lookup_status: 'cache_hit',
+            lookup_timestamp: '2026-11-28T10:30:02Z',
+            cached: true,
+            live_lookup_performed: false,
+            evidence_summary: 'Controlled RFC 5737 test IP fixture',
+            references: [
+              { source_name: 'autosoc_synthetic_ti_fixture', reference_id: 'FIXTURE-IP-001' },
+            ],
+            provenance: {
+              provider: 'autosoc.mock_ti_fixture',
+              provider_version: '0.1.0',
+              source_fields: ['source_ip'],
+              method: 'deterministic_ip_classifier',
+              evidence: 'Controlled RFC 5737 test IP fixture',
+              live_lookup_performed: false,
+            },
+          },
+        ],
+        context: {
+          network: { is_internal_src: false },
+          threat_intel: {
+            status: 'completed',
+            providers_queried: ['autosoc.mock_ti_fixture'],
+            cache_hits: 1,
+            live_lookups: 0,
+            max_confidence: 0.92,
+            ip_score: 92,
+            sources: ['autosoc.mock_ti_fixture'],
+          },
+        },
+        warnings: [],
+        errors: [],
+        attempt_count: 2,
+        enriched_at: '2026-11-28T10:30:02Z',
+        created_at: '2026-11-28T10:30:01Z',
+        updated_at: '2026-11-28T10:30:02Z',
+      },
+      created_at: '2026-11-28T10:30:00Z',
+    }
+    ;(global.fetch as jest.Mock).mockResolvedValueOnce({ ok: true, json: async () => backendItem })
+
+    const res = await fetchNormalizedEventById('evt-ti-reconciled')
+    const obs = res.enrichment?.observables?.[0]
+    expect(obs?.lookup_status).toBe('cache_hit')
+    expect(obs?.cached).toBe(true)
+    expect(obs?.live_lookup_performed).toBe(false)
+    expect(obs?.references?.[0].reference_id).toBe('FIXTURE-IP-001')
+    expect(res.enrichment?.context?.threat_intel?.provider).toBe('autosoc.mock_ti_fixture')
+    expect(res.enrichment?.context?.threat_intel?.cached).toBe(true)
+    expect(res.enrichment?.context?.threat_intel?.live_lookup_performed).toBe(false)
+    expect(res.enrichment?.context?.threat_intel?.confidence).toBe(0.92)
+  })
 })

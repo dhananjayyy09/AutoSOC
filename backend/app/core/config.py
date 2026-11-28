@@ -1,8 +1,14 @@
 import logging
-from pydantic import Field, AliasChoices, model_validator
+import re
+from typing import List, Optional
+from urllib.parse import urlsplit
+
+from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger("autosoc")
+
+_TI_PROVIDER_NAME_RE = re.compile(r"^[a-zA-Z0-9_.-]{1,64}$")
 
 
 class Settings(BaseSettings):
@@ -46,6 +52,63 @@ class Settings(BaseSettings):
         default="localhost:9092",
         validation_alias=AliasChoices("KAFKA_BROKERS", "KAFKA_BOOTSTRAP_SERVERS"),
     )
+
+    # Threat Intelligence Providers (Day 10)
+    TI_ENABLED: bool = False
+    TI_PROVIDERS: str = ""
+    TI_TIMEOUT_SECONDS: float = Field(default=3.0, gt=0.0, le=30.0)
+    TI_CACHE_TTL_SECONDS: int = Field(default=300, ge=1, le=86400)
+    TI_MAX_OBSERVABLES_PER_EVENT: int = Field(default=10, ge=1, le=100)
+    TI_USE_REDIS_CACHE: bool = True
+
+    # Optional external TI credentials via environment (never logged or serialized)
+    TI_VIRUSTOTAL_API_KEY: Optional[SecretStr] = None
+    TI_ABUSEIPDB_API_KEY: Optional[SecretStr] = None
+    TI_OTX_API_KEY: Optional[SecretStr] = None
+    TI_GENERIC_API_KEY: Optional[SecretStr] = None
+    TI_GENERIC_BASE_URL: Optional[str] = None
+
+    @property
+    def enabled_ti_providers(self) -> List[str]:
+        """Ordered, deduplicated lowercase TI provider identifiers from TI_PROVIDERS."""
+        if not self.TI_ENABLED or not self.TI_PROVIDERS:
+            return []
+        seen: List[str] = []
+        for raw in self.TI_PROVIDERS.split(","):
+            item = raw.strip().lower()
+            if item and item not in seen:
+                seen.append(item)
+        return seen
+
+    @field_validator("TI_PROVIDERS")
+    @classmethod
+    def validate_ti_providers(cls, value: str) -> str:
+        if not value or not value.strip():
+            return ""
+        for raw in value.split(","):
+            item = raw.strip()
+            if not item:
+                continue
+            if not _TI_PROVIDER_NAME_RE.match(item):
+                raise ValueError(
+                    f"Invalid TI provider identifier {item!r}; allowed pattern [a-zA-Z0-9_.-]"
+                )
+        return value
+
+    @field_validator("TI_GENERIC_BASE_URL")
+    @classmethod
+    def validate_ti_generic_base_url(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            return None
+        parsed = urlsplit(stripped)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise ValueError("TI_GENERIC_BASE_URL must be an http or https URL with host")
+        if parsed.username or parsed.password:
+            raise ValueError("TI_GENERIC_BASE_URL must not embed URL credentials")
+        return stripped.rstrip("/")
 
     model_config = SettingsConfigDict(
         env_file=(".env", "../.env"),

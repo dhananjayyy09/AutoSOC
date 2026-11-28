@@ -77,15 +77,26 @@ class IndicatorEnrichmentContext(BaseModel):
 
 
 class ThreatIntelContext(BaseModel):
-    """Validated threat intelligence placeholder/provider context (detection-neutral)."""
+    """Validated threat intelligence summary attached alongside observable context."""
 
     model_config = ConfigDict(extra="forbid")
 
+    status: Optional[str] = Field(default=None, max_length=32)
+    provider: Optional[str] = Field(default=None, max_length=MAX_PROVIDER_NAME_LENGTH)
+    lookup_timestamp: Optional[str] = Field(default=None, max_length=64)
+    cached: Optional[bool] = None
+    live_lookup_performed: Optional[bool] = None
+    confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    evidence_summary: Optional[str] = Field(default=None, max_length=512)
     ip_score: Optional[int] = Field(default=None, ge=0, le=100)
     ip_categories: List[str] = Field(default_factory=list)
     domain_score: Optional[int] = Field(default=None, ge=0, le=100)
     hash_known_malware: Optional[bool] = None
     sources: List[str] = Field(default_factory=list)
+    providers_queried: List[str] = Field(default_factory=list)
+    cache_hits: int = Field(default=0, ge=0)
+    live_lookups: int = Field(default=0, ge=0)
+    max_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
 
 class CanonicalObservableProvenance(BaseModel):
@@ -102,6 +113,8 @@ class CanonicalObservableProvenance(BaseModel):
     method: str = Field(min_length=1, max_length=128)
     evidence: str = Field(min_length=1, max_length=512)
     live_lookup_performed: bool = False
+    lookup_status: Optional[str] = Field(default=None, max_length=32)
+    lookup_timestamp: Optional[str] = Field(default=None, max_length=64)
 
 
 class CanonicalEnrichedObservable(BaseModel):
@@ -114,6 +127,13 @@ class CanonicalEnrichedObservable(BaseModel):
     original_value: str = Field(min_length=1, max_length=2048)
     classification: ObservableClassificationEnum
     verdict: ObservableVerdictEnum = ObservableVerdictEnum.UNKNOWN
+    confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    lookup_status: Optional[str] = Field(default=None, max_length=32)
+    lookup_timestamp: Optional[str] = Field(default=None, max_length=64)
+    cached: Optional[bool] = None
+    live_lookup_performed: Optional[bool] = None
+    evidence_summary: Optional[str] = Field(default=None, max_length=512)
+    references: List[Dict[str, Any]] = Field(default_factory=list)
     context: Dict[str, Any] = Field(default_factory=dict)
     provenance: CanonicalObservableProvenance
 

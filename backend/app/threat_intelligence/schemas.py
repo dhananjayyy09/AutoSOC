@@ -8,10 +8,25 @@ from `app.events.validation` without duplicating schema definitions.
 """
 
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, FrozenSet, List, Optional
+
+from pydantic import ConfigDict, field_validator, model_validator
 
 from app.events.schemas import BaseModel, Field
 from app.events.validation import ValidationIssue
+
+_FORBIDDEN_TI_KEYS: FrozenSet[str] = frozenset({"raw_payload", "raw_event"})
+
+
+def contains_forbidden_ti_keys(obj: Any) -> bool:
+    """Recursively ensure raw event payload keys never leak into TI payloads."""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if str(k) in _FORBIDDEN_TI_KEYS or contains_forbidden_ti_keys(v):
+                return True
+    elif isinstance(obj, list):
+        return any(contains_forbidden_ti_keys(item) for item in obj)
+    return False
 
 
 class EnrichmentStatusEnum(str, Enum):
@@ -66,11 +81,28 @@ class ObservableClassificationEnum(str, Enum):
 class ObservableVerdictEnum(str, Enum):
     """
     Reputation/threat verdict for an observable.
-    Day 9 local deterministic enrichment strictly uses `unknown` because no
-    live threat-intelligence feeds or unverified verdicts are allowed.
+    Offline deterministic enrichment strictly preserves `unknown`; external TI
+    providers may assert `benign`, `suspicious`, or `malicious` only with evidence.
     """
 
     UNKNOWN = "unknown"
+    BENIGN = "benign"
+    SUSPICIOUS = "suspicious"
+    MALICIOUS = "malicious"
+
+
+class ThreatIntelLookupStatusEnum(str, Enum):
+    """Granular status for per-observable Threat Intelligence provider lookups."""
+
+    SUCCESS = "success"
+    NO_DATA = "no_data"
+    CACHE_HIT = "cache_hit"
+    TIMEOUT = "timeout"
+    UNAVAILABLE = "unavailable"
+    INVALID_RESPONSE = "invalid_response"
+    UNSUPPORTED = "unsupported"
+    SKIPPED_LIMIT = "skipped_limit"
+    OFFLINE_ONLY = "offline_only"
 
 
 class EnrichmentProvenance(BaseModel):
@@ -102,6 +134,14 @@ class EnrichmentProvenance(BaseModel):
         default=False,
         description="False for deterministic local enrichment; True only for live external TI lookups",
     )
+    lookup_status: Optional[str] = Field(
+        default=None,
+        description="Consolidated lookup disposition (offline_only, success, cache_hit, timeout, etc.)",
+    )
+    lookup_timestamp: Optional[str] = Field(
+        default=None,
+        description="ISO 8601 UTC timestamp of external TI lookup or cache retrieval",
+    )
 
 
 class EnrichedObservable(BaseModel):
@@ -119,7 +159,37 @@ class EnrichedObservable(BaseModel):
     )
     verdict: ObservableVerdictEnum = Field(
         default=ObservableVerdictEnum.UNKNOWN,
-        description="Threat verdict ('unknown' for Day 9 local enrichment)",
+        description="Threat verdict ('unknown' when no evidence-backed TI verdict exists)",
+    )
+    confidence: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Validated provider confidence score [0.0, 1.0] when evidence-backed",
+    )
+    lookup_status: Optional[str] = Field(
+        default=None,
+        description="Consolidated TI lookup status for this observable",
+    )
+    lookup_timestamp: Optional[str] = Field(
+        default=None,
+        description="ISO 8601 UTC timestamp when TI intelligence was resolved",
+    )
+    cached: Optional[bool] = Field(
+        default=None,
+        description="True when observable TI result was served from cache",
+    )
+    live_lookup_performed: Optional[bool] = Field(
+        default=None,
+        description="True only when a live external TI network call ran for this observable",
+    )
+    evidence_summary: Optional[str] = Field(
+        default=None,
+        description="Concise sanitized summary of supporting TI evidence",
+    )
+    references: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Sanitized provider reference metadata (source_name, reference_id, reference_url)",
     )
     context: Dict[str, Any] = Field(
         default_factory=dict,
@@ -128,6 +198,73 @@ class EnrichedObservable(BaseModel):
     provenance: EnrichmentProvenance = Field(
         description="Full provenance chain linking back to source event and fields"
     )
+
+
+class ThreatIntelLookupRequest(BaseModel):
+    """Normalized, bounded request passed to ThreatIntelProviderProtocol implementations."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    observable_type: ObservableTypeEnum
+    normalized_value: str = Field(min_length=1, max_length=2048)
+    source_event_id: Optional[str] = None
+    ingestion_id: str = Field(min_length=1, max_length=36)
+    timeout_seconds: float = Field(default=3.0, gt=0.0, le=30.0)
+
+
+class ThreatIntelLookupResult(BaseModel):
+    """
+    Strictly validated external Threat Intelligence provider lookup response.
+    Treats external provider data as untrusted and enforces evidence backing for
+    any non-unknown verdict.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str = Field(min_length=1, max_length=64)
+    provider_version: str = Field(min_length=1, max_length=32)
+    observable_type: ObservableTypeEnum
+    normalized_value: str = Field(min_length=1, max_length=2048)
+    lookup_status: ThreatIntelLookupStatusEnum
+    verdict: ObservableVerdictEnum = ObservableVerdictEnum.UNKNOWN
+    confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    evidence: Optional[str] = Field(default=None, max_length=512)
+    references: List[Dict[str, Any]] = Field(default_factory=list, max_length=20)
+    categories: List[str] = Field(default_factory=list, max_length=20)
+    score: Optional[int] = Field(default=None, ge=0, le=100)
+    attributes: Dict[str, Any] = Field(default_factory=dict)
+    lookup_timestamp: str = Field(min_length=1, max_length=64)
+    live_lookup_performed: bool = False
+    cache_hit: bool = False
+    error_message: Optional[str] = Field(default=None, max_length=256)
+
+    @field_validator("categories")
+    @classmethod
+    def validate_categories(cls, value: List[str]) -> List[str]:
+        cleaned: List[str] = []
+        for item in value[:20]:
+            text = str(item).strip()
+            if text and text not in cleaned:
+                cleaned.append(text[:64])
+        return cleaned
+
+    @model_validator(mode="after")
+    def enforce_evidence_and_no_raw_leakage(self) -> "ThreatIntelLookupResult":
+        if contains_forbidden_ti_keys(self.attributes):
+            raise ValueError("Forbidden raw payload key found in TI attributes")
+        if self.verdict != ObservableVerdictEnum.UNKNOWN:
+            if not self.evidence or not self.evidence.strip():
+                raise ValueError(
+                    f"Non-unknown verdict '{self.verdict.value}' requires supporting evidence"
+                )
+            if self.lookup_status not in (
+                ThreatIntelLookupStatusEnum.SUCCESS,
+                ThreatIntelLookupStatusEnum.CACHE_HIT,
+            ):
+                raise ValueError(
+                    f"Non-unknown verdict requires success or cache_hit status, got {self.lookup_status.value!r}"
+                )
+        return self
 
 
 class EventEnrichmentResult(BaseModel):

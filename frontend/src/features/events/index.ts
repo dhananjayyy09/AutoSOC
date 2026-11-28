@@ -5,6 +5,7 @@ export { EventIngestionForm } from "./event-ingestion-form";
 export { RecentEventsList } from "./recent-events-list";
 export { NormalizationStatusBadge } from "./normalization-status-badge";
 export { EnrichmentStatusBadge } from "./enrichment-status-badge";
+export { ThreatLookupStatusBadge, ThreatVerdictBadge } from "./threat-intel-status-badge";
 export { EnrichmentContextPanel } from "./enrichment-context-panel";
 export { NormalizedEventView } from "./normalized-event-view";
 export { NormalizedEventExplorer, getNormalizedEventKey } from "./normalized-event-explorer";
@@ -50,7 +51,9 @@ export type {
   EventEnrichmentProvenance,
   NormalizedSecurityEvent,
   EventObservableEnrichment,
+  ObservableReference,
   EventEnrichmentContext,
+  ThreatIntelLookupStatus,
 } from "@/types";
 
 export const EVENTS_CONFIG = {
