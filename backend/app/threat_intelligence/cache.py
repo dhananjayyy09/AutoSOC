@@ -195,9 +195,7 @@ class ThreatIntelCache:
 
         try:
             validated = ThreatIntelLookupResult(
-                **result.model_copy(
-                    update={"cache_hit": False, "live_lookup_performed": True}
-                ).model_dump()
+                **result.model_copy(update={"cache_hit": False}).model_dump()
             )
         except (ValidationError, ValueError, TypeError):
             return False

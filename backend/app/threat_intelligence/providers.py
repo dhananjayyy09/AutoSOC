@@ -694,16 +694,129 @@ class GenericHTTPThreatIntelProvider:
         }
 
 
+def _format_sync_evidence(evidence: Dict[str, Any], errors: Sequence[Any], provider_name: str) -> Optional[str]:
+    if errors:
+        first_msg = getattr(errors[0], "message", None)
+        if isinstance(first_msg, str) and first_msg.strip():
+            return first_msg.strip()[:512]
+    if not isinstance(evidence, dict) or not evidence:
+        return None
+    parts: List[str] = []
+    if isinstance(evidence.get("note"), str) and evidence["note"].strip():
+        parts.append(evidence["note"].strip())
+    if isinstance(evidence.get("fixture_id"), str) and evidence["fixture_id"].strip():
+        parts.append(f"fixture={evidence['fixture_id'].strip()}")
+    if isinstance(evidence.get("categories"), list) and evidence["categories"]:
+        cats = ", ".join(str(c) for c in evidence["categories"][:5])
+        parts.append(f"categories={cats}")
+    if not parts:
+        parts.append(f"{provider_name} supplied structured attributes ({len(evidence)} keys)")
+    return "; ".join(parts)[:512]
+
+
+class SyncTIProviderAdapter:
+    """
+    Explicit bridge adapting Pranjal's synchronous `provider_contract.ThreatIntelProviderProtocol`
+    (e.g., `FixtureThreatIntelProvider`) into DJ's async `ThreatIntelOrchestrator` path.
+    Preserves `is_live_lookup` (False for synthetic/mock fixtures), strict observable-only
+    requests, references, and conservative verdict semantics.
+    """
+
+    def __init__(self, sync_provider: Any) -> None:
+        self._sync_provider = sync_provider
+
+    @property
+    def provider_id(self) -> str:
+        return str(self._sync_provider.provider_name)
+
+    @property
+    def provider_version(self) -> str:
+        return str(self._sync_provider.provider_version)
+
+    @property
+    def is_live_lookup(self) -> bool:
+        return bool(self._sync_provider.is_live_lookup)
+
+    def supports_observable(self, observable_type: ObservableTypeEnum) -> bool:
+        return observable_type in self._sync_provider.supported_observable_types
+
+    def is_configured(self) -> bool:
+        return True
+
+    async def lookup(self, request: ThreatIntelLookupRequest) -> Dict[str, Any]:
+        from app.threat_intelligence.provider_contract import (
+            ObservableLookupRequest,
+            ProviderLookupStatusEnum,
+        )
+
+        # Pass strictly minimal observable-only request (never event IDs, raw payloads, or secrets)
+        sync_req = ObservableLookupRequest(
+            observable_type=request.observable_type,
+            normalized_value=request.normalized_value,
+        )
+        res = self._sync_provider.lookup(sync_req)
+
+        status_map = {
+            ProviderLookupStatusEnum.FOUND: ThreatIntelLookupStatusEnum.SUCCESS,
+            ProviderLookupStatusEnum.NO_RESULT: ThreatIntelLookupStatusEnum.NO_DATA,
+            ProviderLookupStatusEnum.TIMEOUT: ThreatIntelLookupStatusEnum.TIMEOUT,
+            ProviderLookupStatusEnum.UNAVAILABLE: ThreatIntelLookupStatusEnum.UNAVAILABLE,
+            ProviderLookupStatusEnum.MALFORMED_RESPONSE: ThreatIntelLookupStatusEnum.INVALID_RESPONSE,
+            ProviderLookupStatusEnum.FAILED: ThreatIntelLookupStatusEnum.INVALID_RESPONSE,
+            ProviderLookupStatusEnum.UNSUPPORTED_OBSERVABLE: ThreatIntelLookupStatusEnum.UNSUPPORTED,
+            ProviderLookupStatusEnum.SKIPPED: ThreatIntelLookupStatusEnum.SKIPPED_LIMIT,
+        }
+        mapped_status = status_map.get(
+            res.lookup_status, ThreatIntelLookupStatusEnum.INVALID_RESPONSE
+        )
+        evidence_text = _format_sync_evidence(res.evidence, res.errors, self.provider_id)
+        if res.verdict != ObservableVerdictEnum.UNKNOWN and not evidence_text:
+            evidence_text = f"{self.provider_id} returned verdict '{res.verdict.value}'"
+
+        categories: List[str] = []
+        if isinstance(res.evidence, dict) and isinstance(res.evidence.get("categories"), list):
+            categories = [str(c) for c in res.evidence["categories"][:20]]
+
+        score: Optional[int] = None
+        if res.confidence is not None:
+            score = max(0, min(100, int(round(res.confidence * 100))))
+
+        error_msg = res.errors[0].message[:256] if res.errors else None
+        return {
+            "provider": res.provider_name,
+            "provider_version": res.provider_version,
+            "observable_type": res.observable_type.value,
+            "normalized_value": res.normalized_value,
+            "lookup_status": mapped_status.value,
+            "verdict": res.verdict.value,
+            "confidence": res.confidence,
+            "evidence": evidence_text,
+            "references": [ref.model_dump() for ref in (res.references or [])],
+            "categories": categories,
+            "score": score,
+            "attributes": dict(res.evidence or {}),
+            "lookup_timestamp": res.lookup_timestamp,
+            "live_lookup_performed": bool(res.live_lookup_performed),
+            "error_message": error_msg,
+        }
+
+
 def build_configured_ti_providers(app_settings: Any) -> Dict[str, ThreatIntelProviderProtocol]:
-    """Instantiate built-in TI provider adapters wired from validated application Settings."""
+    """Instantiate built-in live & deterministic fixture TI adapters from validated Settings."""
+    from app.threat_intelligence.mock_adapter import FixtureThreatIntelProvider
+
     vt = VirusTotalProvider(api_key=getattr(app_settings, "TI_VIRUSTOTAL_API_KEY", None))
     abuse = AbuseIPDBProvider(api_key=getattr(app_settings, "TI_ABUSEIPDB_API_KEY", None))
     generic = GenericHTTPThreatIntelProvider(
         base_url=getattr(app_settings, "TI_GENERIC_BASE_URL", None),
         api_key=getattr(app_settings, "TI_GENERIC_API_KEY", None),
     )
+    fixture_adapter = SyncTIProviderAdapter(FixtureThreatIntelProvider())
     return {
         vt.provider_id: vt,
         abuse.provider_id: abuse,
         generic.provider_id: generic,
+        "fixture": fixture_adapter,
+        "mock": fixture_adapter,
+        fixture_adapter.provider_id: fixture_adapter,
     }

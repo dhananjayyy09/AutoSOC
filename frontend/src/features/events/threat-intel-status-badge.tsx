@@ -32,6 +32,12 @@ export function getLookupStatusPresentation(
         className: "border-muted-foreground/40 bg-muted/40 text-muted-foreground",
         Icon: MinusCircle,
       }
+    case "offline_only":
+      return {
+        label: "Offline Only",
+        className: "border-muted-foreground/40 bg-muted/40 text-muted-foreground",
+        Icon: MinusCircle,
+      }
     case "pending":
     case "lookup_pending":
       return {
@@ -42,17 +48,32 @@ export function getLookupStatusPresentation(
     case "completed":
     case "lookup_completed":
     case "ok":
+    case "success":
+    case "found":
       return {
         label: "Lookup Completed",
         className: "border-emerald-500/40 bg-emerald-500/10 text-emerald-300",
         Icon: CheckCircle2,
       }
+    case "cache_hit":
+      return {
+        label: "Cached Hit",
+        className: "border-blue-500/40 bg-blue-500/10 text-blue-300",
+        Icon: CheckCircle2,
+      }
     case "no_result":
     case "not_found":
+    case "no_data":
       return {
         label: "No Result",
         className: "border-slate-500/40 bg-slate-500/10 text-slate-300",
         Icon: MinusCircle,
+      }
+    case "timeout":
+      return {
+        label: "Timed Out",
+        className: "border-amber-500/40 bg-amber-500/10 text-amber-300",
+        Icon: Clock,
       }
     case "provider_unavailable":
     case "unavailable":
@@ -61,9 +82,25 @@ export function getLookupStatusPresentation(
         className: "border-amber-500/40 bg-amber-500/10 text-amber-300",
         Icon: ServerOff,
       }
+    case "skipped":
+    case "skipped_limit":
+      return {
+        label: "Skipped",
+        className: "border-slate-500/40 bg-slate-500/10 text-slate-300",
+        Icon: MinusCircle,
+      }
+    case "unsupported":
+    case "unsupported_observable":
+      return {
+        label: "Unsupported",
+        className: "border-slate-500/40 bg-slate-500/10 text-slate-300",
+        Icon: MinusCircle,
+      }
     case "failed":
     case "lookup_failed":
     case "error":
+    case "invalid_response":
+    case "malformed_response":
       return {
         label: "Lookup Failed",
         className: "border-red-500/40 bg-red-500/10 text-red-300",

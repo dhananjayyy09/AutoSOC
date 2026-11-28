@@ -51,6 +51,7 @@ export type {
   EventEnrichmentProvenance,
   NormalizedSecurityEvent,
   EventObservableEnrichment,
+  ObservableReference,
   EventEnrichmentContext,
   ThreatIntelLookupStatus,
 } from "@/types";

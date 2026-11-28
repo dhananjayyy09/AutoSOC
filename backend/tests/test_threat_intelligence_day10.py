@@ -768,3 +768,169 @@ def test_live_postgres_day10_ti_orchestration_cache_and_api_contract(live_postgr
         assert len(stub_vt.calls) == 3
         assert r_body["context"]["threat_intel"]["cache_hits"] == 3
         assert r_body["observables"][0]["lookup_status"] == "cache_hit"
+
+
+def test_conflicting_providers_resolve_to_unknown_in_orchestrator():
+    from app.threat_intelligence import FixtureThreatIntelProvider, SyncTIProviderAdapter
+
+    async def _run():
+        p_mal = SyncTIProviderAdapter(
+            FixtureThreatIntelProvider(
+                provider_name="fixture_mal",
+                fixtures={("ip", "203.0.113.99"): {"verdict": "malicious", "confidence": 0.9}},
+            )
+        )
+        p_benign = SyncTIProviderAdapter(
+            FixtureThreatIntelProvider(
+                provider_name="fixture_benign",
+                fixtures={("ip", "203.0.113.99"): {"verdict": "benign", "confidence": 0.95}},
+            )
+        )
+        orch = ThreatIntelOrchestrator(
+            enabled=True,
+            provider_names=["fixture_mal", "fixture_benign"],
+            cache=ThreatIntelCache(ttl_seconds=60, use_redis=False),
+            providers={"fixture_mal": p_mal, "fixture_benign": p_benign},
+        )
+        res = await DeterministicLocalEnricher(ti_orchestrator=orch).enrich(
+            {
+                "event_id": "eeee1111-1111-4111-8111-111111111111",
+                "ingestion_id": "ffff1111-1111-4111-8111-111111111111",
+                "source_ip": "203.0.113.99",
+                "metadata": {},
+            }
+        )
+        assert res["status"] == "enriched_partial"
+        assert res["live_lookup_performed"] is False
+        obs = res["enrichment_data"]["observables"][0]
+        assert obs["verdict"] == "unknown"
+        assert obs["confidence"] is None
+        assert any("Conflicting provider verdicts" in w for w in res["warnings"])
+
+    asyncio.run(_run())
+
+
+def test_fixture_provider_integration_all_scenarios_e2e_postgres(live_postgres_day10):
+    """
+    End-to-end PostgreSQL + API verification across Scenarios A-H using
+    Pranjal's FixtureThreatIntelProvider bridged into DJ's unified orchestrator.
+    """
+    from app.threat_intelligence import build_configured_ti_providers
+
+    fixture_settings = Settings(TI_ENABLED=True, TI_PROVIDERS="fixture")
+    orch = ThreatIntelOrchestrator(
+        settings_obj=fixture_settings,
+        cache=ThreatIntelCache(ttl_seconds=120, use_redis=False),
+        providers=build_configured_ti_providers(fixture_settings),
+    )
+    service = EnrichmentService(enricher=DeterministicLocalEnricher(ti_orchestrator=orch))
+
+    def _post_suricata(sensor_suffix: str, raw_obj: Dict[str, Any]):
+        raw_payload = json.dumps(raw_obj)
+        return client.post(
+            "/api/v1/events/ingest",
+            json={
+                "ingestion_id": str(uuid4()),
+                "source_type": "suricata",
+                "sensor_id": f"{_PG_DAY10_PREFIX}{sensor_suffix}",
+                "ingest_time": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "raw_hash": compute_raw_hash(raw_payload),
+                "raw_payload": raw_payload,
+            },
+        )
+
+    with patch("app.api.v1.endpoints.events._default_enrichment_service", service):
+        # Scenario A: Successful fixture lookup (203.0.113.99 malicious + domain benign, mock never sets live_lookup_performed)
+        r_a = _post_suricata(
+            "scen-a",
+            {
+                "timestamp": "2026-11-28T10:00:00Z",
+                "event_type": "alert",
+                "src_ip": "203.0.113.99",
+                "dest_ip": "198.51.100.10",
+                "dest_port": 443,
+                "proto": "tcp",
+                "alert": {"severity": 1, "signature": "ET FIXTURE SCENARIO A"},
+                "dns": {"rrname": "benign-cdn.example.invalid"},
+            },
+        )
+        assert r_a.status_code == 201 and r_a.json()["enrichment_status"] == "enriched"
+        eid_a = r_a.json()["event_id"]
+
+        norm_a = client.get(f"/api/v1/events/normalized/{eid_a}").json()
+        assert norm_a["enrichment"]["live_lookup_performed"] is False
+        ti_a = norm_a["enrichment"]["context"]["threat_intel"]
+        assert ti_a["provider"] == "autosoc.mock_ti_fixture"
+        assert ti_a["live_lookup_performed"] is False
+        assert ti_a["status"] == "completed"
+        obs_a = {o["normalized_value"]: o for o in norm_a["enrichment"]["observables"]}
+        assert obs_a["203.0.113.99"]["verdict"] == "malicious"
+        assert obs_a["203.0.113.99"]["confidence"] == 0.92
+        assert obs_a["203.0.113.99"]["live_lookup_performed"] is False
+        assert obs_a["203.0.113.99"]["references"][0]["reference_id"] == "FIXTURE-IP-001"
+        assert obs_a["benign-cdn.example.invalid"]["verdict"] == "benign"
+
+        # Scenario B: No provider result (8.8.8.8 -> no_data & verdict unknown)
+        r_b = _post_suricata(
+            "scen-b",
+            {
+                "timestamp": "2026-11-28T10:01:00Z",
+                "event_type": "flow",
+                "src_ip": "8.8.8.8",
+                "proto": "udp",
+            },
+        )
+        assert r_b.status_code == 201 and r_b.json()["enrichment_status"] == "enriched"
+        enr_b = client.get(f"/api/v1/events/normalized/{r_b.json()['event_id']}/enrichment").json()
+        assert enr_b["observables"][0]["lookup_status"] == "no_data"
+        assert enr_b["observables"][0]["verdict"] == "unknown"
+        assert enr_b["observables"][0]["confidence"] is None
+        assert enr_b["context"]["threat_intel"]["status"] == "no_result"
+
+        # Scenario C & E: Provider unavailable + timeout mixed with valid observable -> enriched_partial
+        r_c = _post_suricata(
+            "scen-ce",
+            {
+                "timestamp": "2026-11-28T10:02:00Z",
+                "event_type": "alert",
+                "src_ip": "203.0.113.251",  # simulated unavailable
+                "dest_ip": "203.0.113.250", # simulated timeout
+                "dns": {"rrname": "malicious-sim.example.invalid"},  # simulated found malicious
+                "alert": {"severity": 2, "signature": "ET FIXTURE SCENARIO CE"},
+            },
+        )
+        assert r_c.status_code == 201 and r_c.json()["enrichment_status"] == "enriched_partial"
+        enr_c = client.get(f"/api/v1/events/normalized/{r_c.json()['event_id']}/enrichment").json()
+        obs_c = {o["normalized_value"]: o for o in enr_c["observables"]}
+        assert obs_c["203.0.113.251"]["lookup_status"] == "unavailable"
+        assert obs_c["203.0.113.251"]["verdict"] == "unknown"
+        assert obs_c["203.0.113.250"]["lookup_status"] == "timeout"
+        assert obs_c["203.0.113.250"]["verdict"] == "unknown"
+        assert obs_c["malicious-sim.example.invalid"]["verdict"] == "malicious"
+
+        # Scenario F: No observables -> no_observables
+        r_f = _post_suricata(
+            "scen-f",
+            {
+                "timestamp": "2026-11-28T10:03:00Z",
+                "event_type": "stats",
+            },
+        )
+        assert r_f.status_code == 201 and r_f.json()["enrichment_status"] == "no_observables"
+
+        # Scenario G: Normalization failure -> enrichment skipped
+        bad_raw = json.dumps({"event_type": "alert"})  # missing timestamp
+        r_g = client.post(
+            "/api/v1/events/ingest",
+            json={
+                "ingestion_id": str(uuid4()),
+                "source_type": "suricata",
+                "sensor_id": f"{_PG_DAY10_PREFIX}scen-g",
+                "ingest_time": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "raw_hash": compute_raw_hash(bad_raw),
+                "raw_payload": bad_raw,
+            },
+        )
+        assert r_g.status_code == 201
+        assert r_g.json()["normalization_status"] == "failed"
+        assert r_g.json()["enrichment_status"] is None

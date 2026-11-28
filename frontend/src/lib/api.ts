@@ -427,9 +427,18 @@ function parseEventEnrichmentSections(raw: unknown): EventEnrichmentContextSecti
   let threatIntel: ThreatIntelContext | null | undefined;
   if (sec.threat_intel && typeof sec.threat_intel === "object") {
     const ti = sec.threat_intel as Record<string, unknown>;
+    const providersQueried = asStringArray(ti.providers_queried);
+    const cacheHits = typeof ti.cache_hits === "number" ? ti.cache_hits : undefined;
+    const liveLookups = typeof ti.live_lookups === "number" ? ti.live_lookups : undefined;
+    const maxConfidence = typeof ti.max_confidence === "number" ? ti.max_confidence : null;
     threatIntel = {
       status: typeof ti.status === "string" ? ti.status : null,
-      provider: typeof ti.provider === "string" ? ti.provider : null,
+      provider:
+        typeof ti.provider === "string"
+          ? ti.provider
+          : providersQueried && providersQueried.length > 0
+            ? providersQueried.join(", ")
+            : null,
       lookup_timestamp:
         typeof ti.lookup_timestamp === "string"
           ? ti.lookup_timestamp
@@ -441,8 +450,16 @@ function parseEventEnrichmentSections(raw: unknown): EventEnrichmentContextSecti
           ? ti.cached
           : typeof ti.cache_hit === "boolean"
             ? ti.cache_hit
+            : typeof cacheHits === "number"
+              ? cacheHits > 0
+              : null,
+      live_lookup_performed:
+        typeof ti.live_lookup_performed === "boolean"
+          ? ti.live_lookup_performed
+          : typeof liveLookups === "number"
+            ? liveLookups > 0
             : null,
-      confidence: typeof ti.confidence === "number" ? ti.confidence : null,
+      confidence: typeof ti.confidence === "number" ? ti.confidence : maxConfidence,
       evidence_summary:
         typeof ti.evidence_summary === "string"
           ? ti.evidence_summary
@@ -454,7 +471,11 @@ function parseEventEnrichmentSections(raw: unknown): EventEnrichmentContextSecti
       domain_score: typeof ti.domain_score === "number" ? ti.domain_score : null,
       hash_known_malware:
         typeof ti.hash_known_malware === "boolean" ? ti.hash_known_malware : null,
-      sources: asStringArray(ti.sources),
+      sources: asStringArray(ti.sources) ?? providersQueried,
+      providers_queried: providersQueried,
+      cache_hits: cacheHits,
+      live_lookups: liveLookups,
+      max_confidence: maxConfidence,
     };
   }
 
@@ -537,10 +558,24 @@ function normalizeEnrichmentContext(
               : provObj?.provider ??
                 (typeof item.source === "string" ? item.source : null);
 
+          const itemContextObj =
+            item.context && typeof item.context === "object"
+              ? (item.context as Record<string, unknown>)
+              : null;
+          const tiListFromContext = Array.isArray(itemContextObj?.threat_intel)
+            ? (itemContextObj?.threat_intel.filter(
+                (entry): entry is Record<string, unknown> =>
+                  Boolean(entry && typeof entry === "object")
+              ) ?? [])
+            : [];
           const tiObj =
             item.threat_intel && typeof item.threat_intel === "object"
               ? (item.threat_intel as Record<string, unknown>)
-              : null;
+              : itemContextObj?.threat_intel &&
+                  typeof itemContextObj.threat_intel === "object" &&
+                  !Array.isArray(itemContextObj.threat_intel)
+                ? (itemContextObj.threat_intel as Record<string, unknown>)
+                : tiListFromContext[0] ?? null;
           const lookupStatus =
             typeof item.lookup_status === "string"
               ? item.lookup_status
@@ -548,7 +583,9 @@ function normalizeEnrichmentContext(
                 ? tiObj.lookup_status
                 : typeof tiObj?.status === "string"
                   ? tiObj.status
-                  : null;
+                  : provObj && typeof (provObj as unknown as Record<string, unknown>).lookup_status === "string"
+                    ? ((provObj as unknown as Record<string, unknown>).lookup_status as string)
+                    : null;
           const lookupTimestamp =
             typeof item.lookup_timestamp === "string"
               ? item.lookup_timestamp
@@ -560,15 +597,17 @@ function normalizeEnrichmentContext(
                     ? tiObj.looked_up_at
                     : null;
           const evidenceSummary =
-            typeof item.evidence_summary === "string"
-              ? item.evidence_summary
-              : typeof item.evidence === "string"
-                ? item.evidence
-                : typeof tiObj?.evidence_summary === "string"
-                  ? tiObj.evidence_summary
-                  : typeof tiObj?.evidence === "string"
-                    ? tiObj.evidence
-                    : provObj?.evidence ?? null;
+            item.evidence_summary === null
+              ? null
+              : typeof item.evidence_summary === "string"
+                ? item.evidence_summary
+                : typeof item.evidence === "string"
+                  ? item.evidence
+                  : typeof tiObj?.evidence_summary === "string"
+                    ? tiObj.evidence_summary
+                    : typeof tiObj?.evidence === "string"
+                      ? tiObj.evidence
+                      : null;
           const confidence =
             typeof item.confidence === "number"
               ? item.confidence
@@ -584,13 +623,25 @@ function normalizeEnrichmentContext(
                   ? tiObj.cached
                   : typeof tiObj?.cache_hit === "boolean"
                     ? tiObj.cache_hit
-                    : null;
+                    : lookupStatus === "cache_hit"
+                      ? true
+                      : null;
           const obsLiveLookup =
             typeof item.live_lookup_performed === "boolean"
               ? item.live_lookup_performed
               : typeof tiObj?.live_lookup_performed === "boolean"
                 ? tiObj.live_lookup_performed
                 : provObj?.live_lookup_performed ?? null;
+          const references = Array.isArray(item.references)
+            ? item.references
+                .filter((ref): ref is Record<string, unknown> => Boolean(ref && typeof ref === "object"))
+                .map((ref) => ({
+                  source_name: typeof ref.source_name === "string" ? ref.source_name : "",
+                  reference_id: typeof ref.reference_id === "string" ? ref.reference_id : null,
+                  reference_url: typeof ref.reference_url === "string" ? ref.reference_url : null,
+                }))
+                .filter((ref) => ref.source_name.length > 0)
+            : undefined;
 
           return {
             observable: observableValue,
@@ -632,6 +683,7 @@ function normalizeEnrichmentContext(
             confidence,
             cached,
             live_lookup_performed: obsLiveLookup,
+            references,
             tags: asStringArray(item.tags),
             provenance: parsedProv,
             context:

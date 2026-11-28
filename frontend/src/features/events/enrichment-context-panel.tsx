@@ -32,6 +32,19 @@ export function EnrichmentContextPanel({
   const errors = enrichment?.errors ?? []
   const hasAnyEnrichment = Boolean(enrichment || effectiveStatus)
   const threatIntel = enrichment?.context?.threat_intel ?? null
+  const hasNonOfflineTI = Boolean(
+    threatIntel ||
+      observables.some(
+        (o) =>
+          o.lookup_status &&
+          !["offline_only", "not_queried"].includes(o.lookup_status.toLowerCase())
+      )
+  )
+  const headerOriginLabel = enrichment?.live_lookup_performed
+    ? "Live TI Lookup"
+    : hasNonOfflineTI
+      ? "Fixture / Mock TI"
+      : "Offline Deterministic"
 
   return (
     <section
@@ -112,7 +125,7 @@ export function EnrichmentContextPanel({
           )}
           {typeof enrichment?.live_lookup_performed === "boolean" && (
             <Badge variant="outline" className="text-[11px]">
-              {enrichment.live_lookup_performed ? "Live TI Lookup" : "Offline Deterministic"}
+              {headerOriginLabel}
             </Badge>
           )}
           {typeof enrichment?.attempt_count === "number" && (
@@ -285,6 +298,14 @@ export function EnrichmentContextPanel({
                 typeof obs.live_lookup_performed === "boolean"
                   ? obs.live_lookup_performed
                   : provObj?.live_lookup_performed
+              const obsOriginLabel = obsLiveLookup
+                ? "Live TI"
+                : obs.provider?.toLowerCase().includes("mock") ||
+                    obs.provider?.toLowerCase().includes("fixture") ||
+                    (obs.lookup_status &&
+                      !["offline_only", "not_queried"].includes(obs.lookup_status.toLowerCase()))
+                  ? "Fixture TI"
+                  : "Deterministic"
               const timestampText = obs.lookup_timestamp ?? obs.enriched_at ?? null
 
               return (
@@ -316,7 +337,7 @@ export function EnrichmentContextPanel({
                       {obs.verdict && <ThreatVerdictBadge verdict={obs.verdict} />}
                       {typeof obsLiveLookup === "boolean" && (
                         <span className="text-[11px] text-muted-foreground">
-                          ({obsLiveLookup ? "Live TI" : "Deterministic"})
+                          ({obsOriginLabel})
                         </span>
                       )}
                     </div>
@@ -339,6 +360,16 @@ export function EnrichmentContextPanel({
                       <p className="font-mono text-[11px] text-muted-foreground">
                         Confidence: {confidenceText}
                       </p>
+                    )}
+                    {obs.references && obs.references.length > 0 && (
+                      <div className="mt-1 flex flex-wrap gap-1.5 text-[11px] text-muted-foreground">
+                        {obs.references.map((ref, refIdx) => (
+                          <span key={`ref-${idx}-${refIdx}`} className="font-mono">
+                            [{ref.source_name}
+                            {ref.reference_id ? `:${ref.reference_id}` : ""}]
+                          </span>
+                        ))}
+                      </div>
                     )}
                   </TableCell>
                   <TableCell

@@ -295,12 +295,32 @@ export interface ObservableProvenance {
 /** Lookup lifecycle statuses returned by TI provider integrations (Day 10). */
 export type ThreatIntelLookupStatus =
   | "not_queried"
+  | "offline_only"
   | "pending"
   | "completed"
+  | "success"
+  | "found"
+  | "cache_hit"
   | "no_result"
+  | "no_data"
+  | "timeout"
   | "provider_unavailable"
+  | "unavailable"
   | "failed"
+  | "invalid_response"
+  | "malformed_response"
+  | "unsupported"
+  | "unsupported_observable"
+  | "skipped"
+  | "skipped_limit"
   | (string & {});
+
+/** Reference link/record supplied by a TI provider. */
+export interface ObservableReference {
+  source_name: string;
+  reference_id?: string | null;
+  reference_url?: string | null;
+}
 
 /** Extracted observable and its deterministic + TI enrichment context. */
 export interface EventObservableEnrichment {
@@ -319,6 +339,7 @@ export interface EventObservableEnrichment {
   confidence?: number | null;
   cached?: boolean | null;
   live_lookup_performed?: boolean | null;
+  references?: ObservableReference[];
   tags?: string[];
   provenance?: ObservableProvenance | string | null;
   context?: Record<string, unknown>;
@@ -352,6 +373,7 @@ export interface ThreatIntelContext {
   provider?: string | null;
   lookup_timestamp?: string | null;
   cached?: boolean | null;
+  live_lookup_performed?: boolean | null;
   confidence?: number | null;
   evidence_summary?: string | null;
   ip_score?: number | null;
@@ -359,6 +381,10 @@ export interface ThreatIntelContext {
   domain_score?: number | null;
   hash_known_malware?: boolean | null;
   sources?: string[];
+  providers_queried?: string[];
+  cache_hits?: number;
+  live_lookups?: number;
+  max_confidence?: number | null;
 }
 
 /** Event-level enrichment context sections attached alongside observables[]. */

@@ -326,33 +326,58 @@ class ThreatIntelOrchestrator:
     @staticmethod
     def _select_consolidated_result(
         results: Sequence[ThreatIntelLookupResult],
-    ) -> Optional[ThreatIntelLookupResult]:
+    ) -> tuple[Optional[ThreatIntelLookupResult], bool]:
+        """
+        Consolidate per-observable results across providers.
+        Returns (selected_result, had_verdict_conflict).
+        Conflicting MALICIOUS vs BENIGN verdicts NEVER silently return malicious.
+        """
         if not results:
-            return None
-        # Choose highest-severity trustworthy verdict; fall back to first success/no_data/failure
+            return None, False
         trusted = [
             r
             for r in results
-            if r.lookup_status in (ThreatIntelLookupStatusEnum.SUCCESS, ThreatIntelLookupStatusEnum.CACHE_HIT)
+            if r.lookup_status
+            in (ThreatIntelLookupStatusEnum.SUCCESS, ThreatIntelLookupStatusEnum.CACHE_HIT)
         ]
         if trusted:
-            return max(
+            verdicts = {r.verdict for r in trusted}
+            if (
+                ObservableVerdictEnum.MALICIOUS in verdicts
+                and ObservableVerdictEnum.BENIGN in verdicts
+            ):
+                base = trusted[0]
+                return (
+                    base.model_copy(
+                        update={
+                            "verdict": ObservableVerdictEnum.UNKNOWN,
+                            "confidence": None,
+                            "score": None,
+                            "evidence": "Conflicting provider verdicts (malicious vs benign); resolved conservatively to 'unknown'",
+                        }
+                    ),
+                    True,
+                )
+            chosen = max(
                 trusted,
                 key=lambda r: (
                     _VERDICT_PRIORITY.get(r.verdict, 0),
                     r.confidence if r.confidence is not None else -1.0,
                 ),
             )
+            return chosen, False
+
         for preferred_status in (
             ThreatIntelLookupStatusEnum.NO_DATA,
             ThreatIntelLookupStatusEnum.TIMEOUT,
             ThreatIntelLookupStatusEnum.UNAVAILABLE,
             ThreatIntelLookupStatusEnum.INVALID_RESPONSE,
+            ThreatIntelLookupStatusEnum.UNSUPPORTED,
         ):
             for r in results:
                 if r.lookup_status == preferred_status:
-                    return r
-        return results[0]
+                    return r, False
+        return results[0], False
 
     async def enrich_observables(
         self,
@@ -405,6 +430,9 @@ class ThreatIntelOrchestrator:
         domain_scores: List[int] = []
         hash_known_malware: Optional[bool] = None
         confidences: List[float] = []
+        latest_lookup_ts: Optional[str] = None
+        evidence_notes: List[str] = []
+        obs_statuses: List[ThreatIntelLookupStatusEnum] = []
 
         for idx, obs in enumerate(observables):
             if idx >= max_lookups:
@@ -473,6 +501,11 @@ class ThreatIntelOrchestrator:
                 elif r.live_lookup_performed:
                     live_lookups += 1
 
+                if r.lookup_timestamp and (
+                    latest_lookup_ts is None or r.lookup_timestamp > latest_lookup_ts
+                ):
+                    latest_lookup_ts = r.lookup_timestamp
+
                 if r.lookup_status in (
                     ThreatIntelLookupStatusEnum.TIMEOUT,
                     ThreatIntelLookupStatusEnum.UNAVAILABLE,
@@ -489,33 +522,55 @@ class ThreatIntelOrchestrator:
                         )
                     )
 
-                if r.score is not None:
-                    if obs.observable_type == ObservableTypeEnum.IP:
-                        ip_scores.append(r.score)
-                    elif obs.observable_type == ObservableTypeEnum.DOMAIN:
-                        domain_scores.append(r.score)
-                for cat in r.categories:
-                    if obs.observable_type == ObservableTypeEnum.IP and cat not in ip_categories:
-                        ip_categories.append(cat)
-                if (
-                    obs.observable_type == ObservableTypeEnum.FILE_HASH
-                    and r.verdict == ObservableVerdictEnum.MALICIOUS
-                ):
-                    hash_known_malware = True
-                if r.confidence is not None:
-                    confidences.append(r.confidence)
-
-            primary = self._select_consolidated_result(provider_results)
+            primary, had_conflict = self._select_consolidated_result(provider_results)
             if primary is None:
                 updated_obs.append(obs)
                 continue
 
+            if had_conflict:
+                has_partial_failures = True
+                warnings.append(
+                    ValidationIssue(
+                        category=ValidationErrorCategory.INVALID_SCHEMA_TYPE,
+                        field="ti.verdict",
+                        message="Conflicting provider verdicts (malicious vs benign); resolved conservatively to 'unknown'",
+                        severity="warning",
+                    )
+                )
+
+            obs_statuses.append(primary.lookup_status)
+            is_trusted = primary.lookup_status in (
+                ThreatIntelLookupStatusEnum.SUCCESS,
+                ThreatIntelLookupStatusEnum.CACHE_HIT,
+            )
+            if is_trusted:
+                if primary.score is not None:
+                    if obs.observable_type == ObservableTypeEnum.IP:
+                        ip_scores.append(primary.score)
+                    elif obs.observable_type == ObservableTypeEnum.DOMAIN:
+                        domain_scores.append(primary.score)
+                for cat in primary.categories:
+                    if obs.observable_type == ObservableTypeEnum.IP and cat not in ip_categories:
+                        ip_categories.append(cat)
+                if (
+                    obs.observable_type == ObservableTypeEnum.FILE_HASH
+                    and primary.verdict == ObservableVerdictEnum.MALICIOUS
+                ):
+                    hash_known_malware = True
+                elif (
+                    obs.observable_type == ObservableTypeEnum.FILE_HASH
+                    and primary.verdict == ObservableVerdictEnum.BENIGN
+                    and hash_known_malware is None
+                ):
+                    hash_known_malware = False
+                if primary.confidence is not None:
+                    confidences.append(primary.confidence)
+                if primary.evidence and len(evidence_notes) < 3:
+                    evidence_notes.append(f"{obs.normalized_value}: {primary.evidence}")
+
             # Only allow trustworthy SUCCESS / CACHE_HIT verdicts to alter verdict
             resolved_verdict = (
-                primary.verdict
-                if primary.lookup_status
-                in (ThreatIntelLookupStatusEnum.SUCCESS, ThreatIntelLookupStatusEnum.CACHE_HIT)
-                else ObservableVerdictEnum.UNKNOWN
+                primary.verdict if is_trusted else ObservableVerdictEnum.UNKNOWN
             )
 
             obs_context = dict(obs.context)
@@ -529,6 +584,7 @@ class ThreatIntelOrchestrator:
                     "score": r.score,
                     "categories": list(r.categories),
                     "cache_hit": r.cache_hit,
+                    "live_lookup_performed": r.live_lookup_performed,
                     "lookup_timestamp": r.lookup_timestamp,
                 }
                 for r in provider_results
@@ -539,36 +595,37 @@ class ThreatIntelOrchestrator:
                 merged_evidence = f"{obs.provenance.evidence}; TI: {primary.evidence}"[:512]
 
             any_live_for_obs = any(r.live_lookup_performed for r in provider_results)
-            provenance_provider = (
-                primary.provider
-                if primary.lookup_status
-                in (ThreatIntelLookupStatusEnum.SUCCESS, ThreatIntelLookupStatusEnum.CACHE_HIT)
-                else obs.provenance.provider
+            any_cached_for_obs = bool(primary.cache_hit)
+            obs_evidence_summary = (
+                primary.evidence
+                if primary.evidence and primary.lookup_status != ThreatIntelLookupStatusEnum.NO_DATA
+                else (primary.error_message or None)
             )
-            provenance_version = (
-                primary.provider_version
-                if provenance_provider == primary.provider
-                else obs.provenance.provider_version
-            )
+            merged_refs: List[Dict[str, Any]] = []
+            seen_refs: set[tuple[Any, Any, Any]] = set()
+            for r in provider_results:
+                for ref in r.references:
+                    key_ref = (ref.get("source_name"), ref.get("reference_id"), ref.get("reference_url"))
+                    if key_ref not in seen_refs and len(merged_refs) < 20:
+                        seen_refs.add(key_ref)
+                        merged_refs.append(dict(ref))
 
             updated_obs.append(
                 obs.model_copy(
                     update={
                         "verdict": resolved_verdict,
-                        "confidence": primary.confidence
-                        if primary.lookup_status
-                        in (
-                            ThreatIntelLookupStatusEnum.SUCCESS,
-                            ThreatIntelLookupStatusEnum.CACHE_HIT,
-                        )
-                        else None,
+                        "confidence": primary.confidence if is_trusted else None,
                         "lookup_status": primary.lookup_status.value,
                         "lookup_timestamp": primary.lookup_timestamp,
+                        "cached": any_cached_for_obs,
+                        "live_lookup_performed": any_live_for_obs,
+                        "evidence_summary": obs_evidence_summary[:512] if obs_evidence_summary else None,
+                        "references": merged_refs,
                         "context": obs_context,
                         "provenance": obs.provenance.model_copy(
                             update={
-                                "provider": provenance_provider,
-                                "provider_version": provenance_version,
+                                "provider": primary.provider,
+                                "provider_version": primary.provider_version,
                                 "evidence": merged_evidence,
                                 "live_lookup_performed": any_live_for_obs,
                                 "lookup_status": primary.lookup_status.value,
@@ -579,8 +636,31 @@ class ThreatIntelOrchestrator:
                 )
             )
 
+        summary_status: Optional[str] = None
+        if obs_statuses:
+            if any(
+                s in (ThreatIntelLookupStatusEnum.SUCCESS, ThreatIntelLookupStatusEnum.CACHE_HIT)
+                for s in obs_statuses
+            ):
+                summary_status = "completed"
+            elif any(s == ThreatIntelLookupStatusEnum.NO_DATA for s in obs_statuses):
+                summary_status = "no_result"
+            elif any(s == ThreatIntelLookupStatusEnum.TIMEOUT for s in obs_statuses):
+                summary_status = "timeout"
+            elif any(s == ThreatIntelLookupStatusEnum.UNAVAILABLE for s in obs_statuses):
+                summary_status = "provider_unavailable"
+            else:
+                summary_status = "failed"
+
         ti_context = (
             {
+                "status": summary_status,
+                "provider": ", ".join(providers_queried),
+                "lookup_timestamp": latest_lookup_ts,
+                "cached": cache_hits > 0,
+                "live_lookup_performed": live_lookups > 0,
+                "confidence": max(confidences) if confidences else None,
+                "evidence_summary": " | ".join(evidence_notes)[:512] if evidence_notes else None,
                 "ip_score": max(ip_scores) if ip_scores else None,
                 "ip_categories": ip_categories[:20],
                 "domain_score": max(domain_scores) if domain_scores else None,

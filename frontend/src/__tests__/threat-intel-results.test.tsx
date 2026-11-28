@@ -182,4 +182,54 @@ describe('EnrichmentContextPanel Threat Intelligence Results (mocked data)', () 
     expect(screen.getByText('Provider circuit breaker open')).toBeInTheDocument()
     expect(screen.getByText('Upstream HTTP 502')).toBeInTheDocument()
   })
+
+  it('distinguishes backend canonical statuses, Fixture TI vs Offline Deterministic, and references', () => {
+    const fixtureEnrichment: EventEnrichmentContext = {
+      status: 'enriched',
+      provider: 'autosoc.deterministic_local',
+      provider_version: '0.1.0',
+      live_lookup_performed: false,
+      context: {
+        threat_intel: {
+          status: 'completed',
+          provider: 'autosoc.mock_ti_fixture',
+          cached: false,
+          live_lookup_performed: false,
+          confidence: 0.92,
+          evidence_summary: '203.0.113.99: Controlled RFC 5737 test IP fixture',
+          sources: ['autosoc.mock_ti_fixture'],
+        },
+      },
+      observables: [
+        {
+          observable: '203.0.113.99',
+          observable_type: 'ip',
+          verdict: 'malicious',
+          provider: 'autosoc.mock_ti_fixture',
+          lookup_status: 'success',
+          confidence: 0.92,
+          cached: false,
+          live_lookup_performed: false,
+          evidence_summary: 'Controlled RFC 5737 test IP fixture; fixture=SYNTH-IP-001',
+          references: [{ source_name: 'autosoc_synthetic_ti_fixture', reference_id: 'FIXTURE-IP-001' }],
+        },
+        {
+          observable: '203.0.113.250',
+          observable_type: 'ip',
+          verdict: 'unknown',
+          provider: 'autosoc.mock_ti_fixture',
+          lookup_status: 'timeout',
+          live_lookup_performed: false,
+          evidence_summary: "Provider 'autosoc.mock_ti_fixture' lookup timed out",
+        },
+      ],
+    }
+
+    render(<EnrichmentContextPanel enrichment={fixtureEnrichment} />)
+    expect(screen.getByText('Fixture / Mock TI')).toBeInTheDocument()
+    expect(screen.queryByText('Live TI Lookup')).not.toBeInTheDocument()
+    expect(screen.getAllByText('(Fixture TI)').length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByText('Timed Out')).toBeInTheDocument()
+    expect(screen.getByText('[autosoc_synthetic_ti_fixture:FIXTURE-IP-001]')).toBeInTheDocument()
+  })
 })

@@ -81,6 +81,13 @@ class ThreatIntelContext(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    status: Optional[str] = Field(default=None, max_length=32)
+    provider: Optional[str] = Field(default=None, max_length=MAX_PROVIDER_NAME_LENGTH)
+    lookup_timestamp: Optional[str] = Field(default=None, max_length=64)
+    cached: Optional[bool] = None
+    live_lookup_performed: Optional[bool] = None
+    confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    evidence_summary: Optional[str] = Field(default=None, max_length=512)
     ip_score: Optional[int] = Field(default=None, ge=0, le=100)
     ip_categories: List[str] = Field(default_factory=list)
     domain_score: Optional[int] = Field(default=None, ge=0, le=100)
@@ -123,6 +130,10 @@ class CanonicalEnrichedObservable(BaseModel):
     confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     lookup_status: Optional[str] = Field(default=None, max_length=32)
     lookup_timestamp: Optional[str] = Field(default=None, max_length=64)
+    cached: Optional[bool] = None
+    live_lookup_performed: Optional[bool] = None
+    evidence_summary: Optional[str] = Field(default=None, max_length=512)
+    references: List[Dict[str, Any]] = Field(default_factory=list)
     context: Dict[str, Any] = Field(default_factory=dict)
     provenance: CanonicalObservableProvenance
 

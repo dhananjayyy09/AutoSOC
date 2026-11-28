@@ -175,6 +175,22 @@ class EnrichedObservable(BaseModel):
         default=None,
         description="ISO 8601 UTC timestamp when TI intelligence was resolved",
     )
+    cached: Optional[bool] = Field(
+        default=None,
+        description="True when observable TI result was served from cache",
+    )
+    live_lookup_performed: Optional[bool] = Field(
+        default=None,
+        description="True only when a live external TI network call ran for this observable",
+    )
+    evidence_summary: Optional[str] = Field(
+        default=None,
+        description="Concise sanitized summary of supporting TI evidence",
+    )
+    references: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Sanitized provider reference metadata (source_name, reference_id, reference_url)",
+    )
     context: Dict[str, Any] = Field(
         default_factory=dict,
         description="Deterministic structural attributes (e.g., ip_version, is_internal, tld, scheme, algorithm)",
@@ -213,6 +229,7 @@ class ThreatIntelLookupResult(BaseModel):
     verdict: ObservableVerdictEnum = ObservableVerdictEnum.UNKNOWN
     confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     evidence: Optional[str] = Field(default=None, max_length=512)
+    references: List[Dict[str, Any]] = Field(default_factory=list, max_length=20)
     categories: List[str] = Field(default_factory=list, max_length=20)
     score: Optional[int] = Field(default=None, ge=0, le=100)
     attributes: Dict[str, Any] = Field(default_factory=dict)
