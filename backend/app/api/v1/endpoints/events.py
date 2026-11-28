@@ -83,6 +83,16 @@ _default_normalization_service = NormalizationService()
 _default_enrichment_service = EnrichmentService()
 
 
+def get_normalization_service() -> NormalizationService:
+    """FastAPI dependency provider returning the active NormalizationService."""
+    return _default_normalization_service
+
+
+def get_enrichment_service() -> EnrichmentService:
+    """FastAPI dependency provider returning the active EnrichmentService."""
+    return _default_enrichment_service
+
+
 def _format_utc_iso(dt: datetime) -> str:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
@@ -199,6 +209,8 @@ def _to_normalized_response(
 async def ingest_event_envelope(
     payload: Dict[str, Any] = Body(...),
     db: AsyncSession = Depends(get_db),
+    normalization_service: NormalizationService = Depends(get_normalization_service),
+    enrichment_service: EnrichmentService = Depends(get_enrichment_service),
 ) -> Any:
     """
     Accept a raw security-event envelope conforming to the IngestionEnvelope contract,
@@ -253,7 +265,7 @@ async def ingest_event_envelope(
     enrichment_status: Optional[str] = None
     norm_record: Optional[NormalizedEvent] = None
     try:
-        norm_record = await _default_normalization_service.normalize_and_persist(
+        norm_record = await normalization_service.normalize_and_persist(
             db, record
         )
         event_id = norm_record.event_id
@@ -267,7 +279,7 @@ async def ingest_event_envelope(
 
     if event_id is not None and norm_record is not None:
         try:
-            enrich_record = await _default_enrichment_service.enrich_normalized_event(
+            enrich_record = await enrichment_service.enrich_normalized_event(
                 db, norm_record
             )
             if enrich_record is not None:
@@ -573,6 +585,7 @@ async def trigger_normalized_event_enrichment(
         description="Retry enrichment even if already completed or failed",
     ),
     db: AsyncSession = Depends(get_db),
+    enrichment_service: EnrichmentService = Depends(get_enrichment_service),
 ) -> EventEnrichmentResponse:
     """
     Deterministically enrich a persisted NormalizedEvent by event_id, or retry
@@ -587,7 +600,7 @@ async def trigger_normalized_event_enrichment(
         existing is not None
         and existing.enrichment_status == EnrichmentStatusEnum.FAILED.value
     )
-    record = await _default_enrichment_service.enrich_normalized_event(
+    record = await enrichment_service.enrich_normalized_event(
         db, norm_record, retry=should_retry
     )
     if record is None:
@@ -601,12 +614,14 @@ async def trigger_normalized_event_enrichment(
     response_model=ThreatIntelProvidersStatusResponse,
     summary="Get Threat Intelligence Provider Operational Status",
 )
-async def get_threat_intelligence_providers_status() -> ThreatIntelProvidersStatusResponse:
+async def get_threat_intelligence_providers_status(
+    enrichment_service: EnrichmentService = Depends(get_enrichment_service),
+) -> ThreatIntelProvidersStatusResponse:
     """
     Return safe, credential-free operational health and circuit-breaker status
     for configured Threat Intelligence providers without triggering live lookups.
     """
-    enricher = getattr(_default_enrichment_service, "_enricher", None)
+    enricher = enrichment_service.enricher
     orchestrator = getattr(enricher, "ti_orchestrator", None)
     if isinstance(orchestrator, ThreatIntelOrchestrator):
         return orchestrator.get_providers_status()

@@ -159,6 +159,7 @@ def test_offline_mode_when_ti_disabled_or_unconfigured():
         orch_disabled = ThreatIntelOrchestrator(
             enabled=False,
             provider_names=["stub_ti"],
+            cache=ThreatIntelCache(ttl_seconds=60, use_redis=False),
             providers={"stub_ti": stub},
         )
         enricher = DeterministicLocalEnricher(ti_orchestrator=orch_disabled)
@@ -181,6 +182,7 @@ def test_offline_mode_when_ti_disabled_or_unconfigured():
         orch_unconf = ThreatIntelOrchestrator(
             enabled=True,
             provider_names=["virustotal"],
+            cache=ThreatIntelCache(ttl_seconds=60, use_redis=False),
             providers={"virustotal": unconfigured},
         )
         res2 = await DeterministicLocalEnricher(ti_orchestrator=orch_unconf).enrich(norm_dict)
@@ -463,6 +465,7 @@ def test_max_observables_cap_enforced():
             enabled=True,
             provider_names=["cap_ti"],
             max_observables_per_event=2,
+            cache=ThreatIntelCache(ttl_seconds=60, use_redis=False),
             providers={"cap_ti": stub},
         )
         res = await DeterministicLocalEnricher(ti_orchestrator=orch).enrich(
