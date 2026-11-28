@@ -6,13 +6,16 @@ import {
   checkReadiness,
   checkSystemInfo,
   fetchNormalizedEventById,
+  fetchNormalizedEventEnrichment,
   fetchNormalizedEvents,
   fetchRecentEvents,
+  fetchThreatIntelProvidersStatus,
   ingestSecurityEvent,
   isAbortError,
   isNetworkError,
   queryNormalizedEvents,
   resolveApiBaseUrl,
+  retryNormalizedEventEnrichment,
 } from '@/lib/api'
 import type { SystemInfoResponse } from '@/types'
 
@@ -285,6 +288,44 @@ describe('checkReadiness', () => {
     const result = await checkReadiness()
     expect(result.state).toBe('unavailable')
   })
+
+  it('returns unavailable on HTTP 200 missing dependency booleans or array payload', async () => {
+    ;(global.fetch as jest.Mock).mockResolvedValueOnce({ ok: true, json: async () => ({ status: 'ok' }) })
+    const missingFlagsResult = await checkReadiness()
+    expect(missingFlagsResult.state).toBe('unavailable')
+    expect(missingFlagsResult.data).toBeUndefined()
+
+    ;(global.fetch as jest.Mock).mockResolvedValueOnce({ ok: true, json: async () => [] })
+    const arrayResult = await checkReadiness()
+    expect(arrayResult.state).toBe('unavailable')
+    expect(arrayResult.data).toBeUndefined()
+  })
+
+  it('does not fabricate false dependency booleans on generic 503 without dependency detail', async () => {
+    ;(global.fetch as jest.Mock).mockResolvedValueOnce({
+      ok: false,
+      status: 503,
+      statusText: 'Service Unavailable',
+      json: async () => ({ detail: 'Upstream gateway error' }),
+    })
+
+    const result = await checkReadiness()
+    expect(result.state).toBe('unavailable')
+    expect(result.data).toBeUndefined()
+  })
+
+  it('preserves degraded without fabricated booleans on 503 degraded status string only', async () => {
+    ;(global.fetch as jest.Mock).mockResolvedValueOnce({
+      ok: false,
+      status: 503,
+      statusText: 'Service Unavailable',
+      json: async () => ({ detail: { status: 'degraded' } }),
+    })
+
+    const result = await checkReadiness()
+    expect(result.state).toBe('degraded')
+    expect(result.data).toBeUndefined()
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -322,6 +363,17 @@ describe('checkSystemInfo', () => {
 
     const result = await checkSystemInfo()
     expect(result.status).toBe('unavailable')
+  })
+
+  it('returns unavailable on malformed or incomplete system info payload', async () => {
+    ;(global.fetch as jest.Mock).mockResolvedValueOnce({ ok: true, json: async () => null })
+    expect((await checkSystemInfo()).status).toBe('unavailable')
+
+    ;(global.fetch as jest.Mock).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ project_name: 'AutoSOC API' }),
+    })
+    expect((await checkSystemInfo()).status).toBe('unavailable')
   })
 })
 
@@ -874,5 +926,123 @@ describe('fetchNormalizedEvents & fetchNormalizedEventById', () => {
     expect(res.enrichment?.context?.threat_intel?.cached).toBe(true)
     expect(res.enrichment?.context?.threat_intel?.live_lookup_performed).toBe(false)
     expect(res.enrichment?.context?.threat_intel?.confidence).toBe(0.92)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Day 13 Backend Contract Verification & Malformed Payload Rejections
+// ---------------------------------------------------------------------------
+describe('Day 13 backend contract validation & TI provider status', () => {
+  it('throws on malformed ingested/normalized list responses instead of faking empty results', async () => {
+    ;(global.fetch as jest.Mock).mockResolvedValueOnce({ ok: true, json: async () => ({ unexpected: true }) })
+    await expect(fetchRecentEvents(10)).rejects.toThrow(/malformed response/i)
+
+    ;(global.fetch as jest.Mock).mockResolvedValueOnce({ ok: true, json: async () => null })
+    await expect(queryNormalizedEvents({})).rejects.toThrow(/malformed response/i)
+  })
+
+  it('fetches and retries normalized event enrichment and rejects empty/array responses', async () => {
+    const backendEnrichment = {
+      enrichment_id: 'enr-13',
+      event_id: 'evt-13',
+      ingestion_id: 'ing-13',
+      provider: 'autosoc.ti_coordinator',
+      provider_version: '1.0.0',
+      enrichment_status: 'enriched',
+      live_lookup_performed: true,
+      observable_count: 0,
+      observables: [],
+      provenance: { pipeline_version: '1.0.0' },
+      warnings: [],
+      errors: [],
+      attempt_count: 2,
+      enriched_at: '2026-11-28T18:00:00Z',
+      created_at: '2026-11-28T18:00:00Z',
+      updated_at: '2026-11-28T18:00:00Z',
+    }
+
+    ;(global.fetch as jest.Mock).mockResolvedValueOnce({ ok: true, json: async () => backendEnrichment })
+    const fetched = await fetchNormalizedEventEnrichment('evt-13')
+    expect(fetched.enrichment_id).toBe('enr-13')
+    expect(fetched.status).toBe('enriched')
+    expect(fetched.attempt_count).toBe(2)
+
+    ;(global.fetch as jest.Mock).mockResolvedValueOnce({ ok: true, json: async () => backendEnrichment })
+    const retried = await retryNormalizedEventEnrichment('evt-13', true)
+    expect(global.fetch).toHaveBeenLastCalledWith(
+      'http://localhost:8000/api/v1/events/normalized/evt-13/enrich?force_retry=true',
+      expect.objectContaining({ method: 'POST' })
+    )
+    expect(retried.status).toBe('enriched')
+
+    ;(global.fetch as jest.Mock).mockResolvedValueOnce({ ok: true, json: async () => ({}) })
+    await expect(fetchNormalizedEventEnrichment('evt-13')).rejects.toThrow(/malformed response/i)
+
+    ;(global.fetch as jest.Mock).mockResolvedValueOnce({ ok: true, json: async () => [] })
+    await expect(retryNormalizedEventEnrichment('evt-13')).rejects.toThrow(/malformed response/i)
+  })
+
+  it('maps ThreatIntelProvidersStatusResponse and handles 404/501 unsupported vs 500/malformed errors', async () => {
+    const backendProviders = {
+      ti_enabled: true,
+      policy: { max_retries: 2, circuit_breaker_threshold: 3 },
+      providers: [
+        {
+          provider: 'virustotal',
+          provider_version: '3.0',
+          enabled: true,
+          configured: true,
+          operational_state: 'degraded',
+          circuit_state: 'half_open',
+          consecutive_failures: 1,
+          total_requests: 10,
+          total_failures: 1,
+          total_retries: 2,
+          last_success_at: '2026-11-28T17:50:00Z',
+          last_failure_at: '2026-11-28T17:55:00Z',
+          last_failure_category: 'timeout',
+          cooldown_remaining_seconds: 12.5,
+          last_error_summary: 'Upstream timeout Bearer secret-tok',
+        },
+      ],
+      generated_at: '2026-11-28T18:00:00Z',
+    }
+
+    ;(global.fetch as jest.Mock).mockResolvedValueOnce({ ok: true, json: async () => backendProviders })
+    const okRes = await fetchThreatIntelProvidersStatus()
+    expect(okRes.supported).toBe(true)
+    expect(okRes.ti_enabled).toBe(true)
+    expect(okRes.generated_at).toBe('2026-11-28T18:00:00Z')
+    expect(okRes.providers[0]).toMatchObject({
+      provider_id: 'virustotal',
+      provider_version: '3.0',
+      enabled: true,
+      configured: true,
+      status: 'degraded',
+      circuit_breaker_state: 'half_open',
+      failure_category: 'timeout',
+      retry_count: 2,
+      cooldown_remaining_seconds: 12.5,
+      last_error_summary: 'Upstream timeout Bearer [REDACTED]',
+    })
+
+    ;(global.fetch as jest.Mock).mockResolvedValueOnce({
+      ok: false,
+      status: 404,
+      statusText: 'Not Found',
+      json: async () => ({}),
+    })
+    expect(await fetchThreatIntelProvidersStatus()).toEqual({ supported: false, providers: [] })
+
+    ;(global.fetch as jest.Mock).mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      statusText: 'Internal Server Error',
+      json: async () => ({}),
+    })
+    await expect(fetchThreatIntelProvidersStatus()).rejects.toMatchObject({ status: 500 })
+
+    ;(global.fetch as jest.Mock).mockResolvedValueOnce({ ok: true, json: async () => ({ wrong: true }) })
+    await expect(fetchThreatIntelProvidersStatus()).rejects.toThrow(/malformed response/i)
   })
 })
