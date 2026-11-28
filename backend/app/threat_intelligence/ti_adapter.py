@@ -68,8 +68,7 @@ def _resolve_verdict_conservatively(
 
     verdicts = {r.verdict for r in found}
     if (
-        (ObservableTypeEnum and False)
-        or (
+        (
             ObservableVerdictEnum.MALICIOUS in verdicts
             and ObservableVerdictEnum.BENIGN in verdicts
         )
@@ -288,12 +287,42 @@ class ThreatIntelObservablePipeline:
                 ],
             }
 
+            any_live_for_obs = any(r.live_lookup_performed for r in ti_results)
+            primary_lookup_status: Optional[str] = None
+            primary_lookup_ts: Optional[str] = None
+            primary_evidence_summary: Optional[str] = conflict_msg
+            if ti_results:
+                found_results = [
+                    r for r in ti_results if r.lookup_status == ProviderLookupStatusEnum.FOUND
+                ]
+                primary_res = found_results[0] if found_results else ti_results[0]
+                primary_lookup_status = primary_res.lookup_status.value
+                primary_lookup_ts = primary_res.lookup_timestamp
+                if primary_evidence_summary is None and primary_res.evidence:
+                    ev_vals = [
+                        f"{k}={v}"
+                        for k, v in primary_res.evidence.items()
+                        if v not in (None, "", [], {})
+                    ]
+                    if ev_vals:
+                        primary_evidence_summary = "; ".join(ev_vals)[:512]
+                elif primary_evidence_summary is None and primary_res.errors:
+                    primary_evidence_summary = primary_res.errors[0].message[:512]
+
+            merged_refs = deduplicate_references(
+                [
+                    ref.model_dump() if hasattr(ref, "model_dump") else dict(ref)
+                    for r in ti_results
+                    for ref in (r.references or [])
+                ]
+            )[:20]
+
             updated_prov = obs.provenance
             # Preserve all Day 9 source_fields / original_values provenance and update live flag
             prov_dump = updated_prov.model_dump()
-            prov_dump["live_lookup_performed"] = any(
-                r.live_lookup_performed for r in ti_results
-            )
+            prov_dump["live_lookup_performed"] = any_live_for_obs
+            prov_dump["lookup_status"] = primary_lookup_status
+            prov_dump["lookup_timestamp"] = primary_lookup_ts
             prov_dump["provider"] = (
                 f"{updated_prov.provider}+ti[{','.join(p.provider_name for p in self._ti_providers)}]"
                 if self._ti_providers
@@ -309,6 +338,12 @@ class ThreatIntelObservablePipeline:
                     original_value=obs.original_value,
                     classification=obs.classification,
                     verdict=resolved_verdict,
+                    confidence=resolved_conf,
+                    lookup_status=primary_lookup_status,
+                    lookup_timestamp=primary_lookup_ts,
+                    live_lookup_performed=any_live_for_obs,
+                    evidence_summary=primary_evidence_summary,
+                    references=merged_refs,
                     context=new_context,
                     provenance=EnrichmentProvenance(**prov_dump),
                 )
