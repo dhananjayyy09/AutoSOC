@@ -35,10 +35,20 @@ async def lifespan(app: FastAPI):
     logger.info("AutoSOC backend startup completed.")
     
     yield
-    
+
     logger.info("Shutting down AutoSOC backend infrastructure...")
-    await redis_service.close()
-    await qdrant_service.close()
-    await kafka_service.close()
-    await close_db()
+    for service_name, closer in (
+        ("redis", redis_service.close),
+        ("qdrant", qdrant_service.close),
+        ("kafka", kafka_service.close),
+        ("postgres", close_db),
+    ):
+        try:
+            await closer()
+        except Exception as exc:
+            logger.warning(
+                "Error shutting down %s infrastructure client (%s).",
+                service_name,
+                type(exc).__name__,
+            )
     logger.info("AutoSOC backend shutdown completed.")

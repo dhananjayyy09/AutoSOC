@@ -357,6 +357,11 @@ class EnrichmentService:
     def __init__(self, enricher: Optional[EventEnricherProtocol] = None) -> None:
         self._enricher: EventEnricherProtocol = enricher or DeterministicLocalEnricher()
 
+    @property
+    def enricher(self) -> EventEnricherProtocol:
+        """Public accessor for the configured EventEnricherProtocol instance."""
+        return self._enricher
+
     async def enrich_by_event_id(
         self, session: AsyncSession, event_id: str, *, retry: bool = False
     ) -> Optional[EventEnrichment]:
