@@ -65,12 +65,16 @@ class ObservableClassificationEnum(str, Enum):
 
 class ObservableVerdictEnum(str, Enum):
     """
-    Reputation/threat verdict for an observable.
-    Day 9 local deterministic enrichment strictly uses `unknown` because no
-    live threat-intelligence feeds or unverified verdicts are allowed.
+    Conservative, evidence-driven reputation/threat verdict for an observable.
+    `unknown` means no reliable reputation conclusion is available.
+    Explicit benign/suspicious/malicious verdicts are represented only when
+    supplied by a validated threat-intelligence provider contract.
     """
 
     UNKNOWN = "unknown"
+    BENIGN = "benign"
+    SUSPICIOUS = "suspicious"
+    MALICIOUS = "malicious"
 
 
 class EnrichmentProvenance(BaseModel):
