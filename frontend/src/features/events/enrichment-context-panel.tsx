@@ -1,10 +1,12 @@
 "use client"
 
 import * as React from "react"
-import { AlertTriangle, Shield, Sparkles } from "lucide-react"
+import { AlertTriangle, RotateCcw, Shield, Sparkles } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { EmptyState } from "@/components/ui/empty-state"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { sanitizeFailureCategory } from "@/lib/api"
 import { EnrichmentStatusBadge } from "./enrichment-status-badge"
 import { ThreatLookupStatusBadge, ThreatVerdictBadge } from "./threat-intel-status-badge"
 import type { EventEnrichmentContext } from "@/types"
@@ -12,6 +14,31 @@ import type { EventEnrichmentContext } from "@/types"
 interface EnrichmentContextPanelProps {
   enrichment?: EventEnrichmentContext | null
   enrichmentStatus?: string | null
+  onRetryEnrichment?: () => void
+  isRetryingEnrichment?: boolean
+  retryEnrichmentError?: string | null
+}
+
+const RETRYABLE_LOOKUP_STATUSES = new Set([
+  "timeout",
+  "unavailable",
+  "provider_unavailable",
+  "rate_limited",
+  "rate_limit",
+  "retry_exhausted",
+  "circuit_open",
+  "circuit_breaker_open",
+  "failed",
+  "lookup_failed",
+  "error",
+  "invalid_response",
+  "malformed_response",
+])
+
+function isFixtureProviderName(provider: string | null | undefined): boolean {
+  if (!provider) return false
+  const lower = provider.toLowerCase()
+  return lower.includes("fixture") || lower.includes("mock")
 }
 
 function formatConfidence(confidence: number | null | undefined): string | null {
@@ -25,6 +52,9 @@ function formatConfidence(confidence: number | null | undefined): string | null 
 export function EnrichmentContextPanel({
   enrichment,
   enrichmentStatus,
+  onRetryEnrichment,
+  isRetryingEnrichment = false,
+  retryEnrichmentError = null,
 }: EnrichmentContextPanelProps) {
   const effectiveStatus = enrichment?.status ?? enrichmentStatus ?? null
   const observables = enrichment?.observables ?? []
@@ -34,10 +64,12 @@ export function EnrichmentContextPanel({
   const threatIntel = enrichment?.context?.threat_intel ?? null
   const hasNonOfflineTI = Boolean(
     threatIntel ||
+      isFixtureProviderName(enrichment?.provider) ||
       observables.some(
         (o) =>
-          o.lookup_status &&
-          !["offline_only", "not_queried"].includes(o.lookup_status.toLowerCase())
+          isFixtureProviderName(o.provider) ||
+          (o.lookup_status &&
+            !["offline_only", "not_queried"].includes(o.lookup_status.toLowerCase()))
       )
   )
   const headerOriginLabel = enrichment?.live_lookup_performed
@@ -45,6 +77,19 @@ export function EnrichmentContextPanel({
     : hasNonOfflineTI
       ? "Fixture / Mock TI"
       : "Offline Deterministic"
+  const normalizedEffectiveStatus = effectiveStatus?.trim().toLowerCase() ?? ""
+  const hasRetryableOutcome = Boolean(
+    hasAnyEnrichment &&
+      (normalizedEffectiveStatus === "failed" ||
+        normalizedEffectiveStatus === "enriched_partial" ||
+        normalizedEffectiveStatus === "partial" ||
+        errors.length > 0 ||
+        observables.some(
+          (obs) =>
+            obs.retry_exhausted === true ||
+            (obs.lookup_status && RETRYABLE_LOOKUP_STATUSES.has(obs.lookup_status.trim().toLowerCase()))
+        ))
+  )
 
   return (
     <section
@@ -68,8 +113,34 @@ export function EnrichmentContextPanel({
             </span>
           )}
           <EnrichmentStatusBadge status={effectiveStatus} />
+          {onRetryEnrichment && hasRetryableOutcome && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={onRetryEnrichment}
+              disabled={isRetryingEnrichment}
+              className="h-7 gap-1.5 text-xs"
+            >
+              <RotateCcw
+                className={isRetryingEnrichment ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"}
+                aria-hidden="true"
+              />
+              {isRetryingEnrichment ? "Retrying Enrichment..." : "Retry Enrichment"}
+            </Button>
+          )}
         </div>
       </div>
+
+      {retryEnrichmentError && (
+        <div
+          role="alert"
+          aria-label="Enrichment retry error"
+          className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+        >
+          Manual enrichment retry failed: {retryEnrichmentError}
+        </div>
+      )}
 
       {!hasAnyEnrichment && (
         <EmptyState
@@ -204,6 +275,26 @@ export function EnrichmentContextPanel({
                 Sources: <strong className="font-mono text-foreground">{threatIntel.sources.join(", ")}</strong>
               </span>
             )}
+            {threatIntel.providers_queried && threatIntel.providers_queried.length > 0 && (
+              <span>
+                Providers Queried:{" "}
+                <strong className="font-mono text-foreground">
+                  {threatIntel.providers_queried.join(", ")}
+                </strong>
+              </span>
+            )}
+            {typeof threatIntel.live_lookups === "number" && (
+              <span>
+                Live Lookups:{" "}
+                <strong className="font-mono text-foreground">{threatIntel.live_lookups}</strong>
+              </span>
+            )}
+            {typeof threatIntel.cache_hits === "number" && (
+              <span>
+                Cache Hits:{" "}
+                <strong className="font-mono text-foreground">{threatIntel.cache_hits}</strong>
+              </span>
+            )}
             {typeof threatIntel.ip_score === "number" && (
               <span>
                 IP Score: <strong className="font-mono text-foreground">{threatIntel.ip_score}</strong>
@@ -300,13 +391,13 @@ export function EnrichmentContextPanel({
                   : provObj?.live_lookup_performed
               const obsOriginLabel = obsLiveLookup
                 ? "Live TI"
-                : obs.provider?.toLowerCase().includes("mock") ||
-                    obs.provider?.toLowerCase().includes("fixture") ||
+                : isFixtureProviderName(obs.provider) ||
                     (obs.lookup_status &&
                       !["offline_only", "not_queried"].includes(obs.lookup_status.toLowerCase()))
                   ? "Fixture TI"
-                  : "Deterministic"
+                  : "Offline Deterministic"
               const timestampText = obs.lookup_timestamp ?? obs.enriched_at ?? null
+              const safeFailureCategory = sanitizeFailureCategory(obs.failure_category)
 
               return (
                 <TableRow key={`${obs.observable}-${obs.observable_type}-${idx}`}>
@@ -343,11 +434,29 @@ export function EnrichmentContextPanel({
                     </div>
                   </TableCell>
                   <TableCell className="text-xs">
-                    {obs.lookup_status ? (
-                      <ThreatLookupStatusBadge status={obs.lookup_status} />
-                    ) : (
-                      <span className="text-muted-foreground">—</span>
-                    )}
+                    <div className="space-y-1">
+                      {obs.lookup_status ? (
+                        <ThreatLookupStatusBadge status={obs.lookup_status} />
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                      {obs.retry_exhausted && (
+                        <div className="text-[11px] font-medium text-red-300">
+                          Retries exhausted
+                          {typeof obs.retry_count === "number" ? ` (${obs.retry_count})` : ""}
+                        </div>
+                      )}
+                      {!obs.retry_exhausted && typeof obs.retry_count === "number" && obs.retry_count > 0 && (
+                        <div className="font-mono text-[11px] text-muted-foreground">
+                          Retries: {obs.retry_count}
+                        </div>
+                      )}
+                      {safeFailureCategory && (
+                        <div className="font-mono text-[11px] text-amber-300">
+                          {safeFailureCategory}
+                        </div>
+                      )}
+                    </div>
                   </TableCell>
                   <TableCell className="text-xs">{obs.provider || "—"}</TableCell>
                   <TableCell className="max-w-xs text-xs">

@@ -7,6 +7,7 @@ import {
   EventIngestionForm,
   NormalizedEventExplorer,
   NormalizedEventView,
+  ProviderStatusPanel,
   RecentEventsList,
   getNormalizedEventKey,
 } from "@/features/events"
@@ -15,6 +16,7 @@ import {
   fetchNormalizedEventById,
   fetchNormalizedEvents,
   isNetworkError,
+  retryNormalizedEventEnrichment,
 } from "@/lib/api"
 import type { IngestedEventRecord, NormalizedSecurityEvent } from "@/types"
 
@@ -24,10 +26,13 @@ export default function EventsPage() {
   const [normalizedEvent, setNormalizedEvent] = React.useState<NormalizedSecurityEvent | null>(null)
   const [isLoadingNormalized, setIsLoadingNormalized] = React.useState(false)
   const [normalizedError, setNormalizedError] = React.useState<string | null>(null)
+  const [isRetryingEnrichment, setIsRetryingEnrichment] = React.useState(false)
+  const [retryEnrichmentError, setRetryEnrichmentError] = React.useState<string | null>(null)
   const requestCounterRef = React.useRef(0)
 
   const loadNormalizedForEvent = React.useCallback(async (evt: IngestedEventRecord | null) => {
     const requestId = ++requestCounterRef.current
+    setRetryEnrichmentError(null)
 
     if (!evt) {
       setNormalizedEvent(null)
@@ -90,6 +95,7 @@ export default function EventsPage() {
       const requestId = ++requestCounterRef.current
       setSelectedEvent(null)
       setNormalizedError(null)
+      setRetryEnrichmentError(null)
 
       if (!evt.event_id) {
         setNormalizedEvent(evt)
@@ -125,6 +131,32 @@ export default function EventsPage() {
   const handleIngestionSuccess = () => {
     setRefreshTrigger((prev) => prev + 1)
   }
+
+  const handleRetryEnrichment = React.useCallback(async (eventId: string) => {
+    setIsRetryingEnrichment(true)
+    setRetryEnrichmentError(null)
+    try {
+      const updatedEnrichment = await retryNormalizedEventEnrichment(eventId, true)
+      setNormalizedEvent((prev) => {
+        if (!prev || prev.event_id !== eventId) return prev
+        return {
+          ...prev,
+          enrichment_status: updatedEnrichment.status ?? prev.enrichment_status ?? null,
+          enrichment: updatedEnrichment,
+        }
+      })
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setRetryEnrichmentError(err.userMessage)
+      } else if (isNetworkError(err)) {
+        setRetryEnrichmentError("Unable to reach the backend enrichment retry endpoint.")
+      } else {
+        setRetryEnrichmentError("Unable to retry enrichment for this event.")
+      }
+    } finally {
+      setIsRetryingEnrichment(false)
+    }
+  }, [])
 
   return (
     <PageContainer
@@ -163,7 +195,14 @@ export default function EventsPage() {
               void handleSelectNormalizedFromExplorer(normalizedEvent)
             }
           }}
+          onRetryEnrichment={(eventId) => {
+            void handleRetryEnrichment(eventId)
+          }}
+          isRetryingEnrichment={isRetryingEnrichment}
+          retryEnrichmentError={retryEnrichmentError}
         />
+
+        <ProviderStatusPanel backendSupported={false} />
       </div>
     </PageContainer>
   )

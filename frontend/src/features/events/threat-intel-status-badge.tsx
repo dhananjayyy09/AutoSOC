@@ -1,10 +1,14 @@
 import * as React from "react"
 import {
+  AlertOctagon,
   AlertTriangle,
   CheckCircle2,
   Clock,
+  FileWarning,
+  Gauge,
   HelpCircle,
   MinusCircle,
+  RotateCcw,
   ServerOff,
   ShieldAlert,
   ShieldCheck,
@@ -82,10 +86,35 @@ export function getLookupStatusPresentation(
         className: "border-amber-500/40 bg-amber-500/10 text-amber-300",
         Icon: ServerOff,
       }
+    case "rate_limited":
+    case "rate_limit":
+      return {
+        label: "Rate Limited",
+        className: "border-amber-500/40 bg-amber-500/10 text-amber-300",
+        Icon: Gauge,
+      }
+    case "circuit_open":
+    case "circuit_breaker_open":
+      return {
+        label: "Circuit Breaker Open",
+        className: "border-red-500/40 bg-red-500/10 text-red-300",
+        Icon: AlertOctagon,
+      }
+    case "retry_exhausted":
+      return {
+        label: "Retry Exhausted",
+        className: "border-red-500/40 bg-red-500/10 text-red-300",
+        Icon: RotateCcw,
+      }
     case "skipped":
-    case "skipped_limit":
       return {
         label: "Skipped",
+        className: "border-slate-500/40 bg-slate-500/10 text-slate-300",
+        Icon: MinusCircle,
+      }
+    case "skipped_limit":
+      return {
+        label: "Skipped (Limit)",
         className: "border-slate-500/40 bg-slate-500/10 text-slate-300",
         Icon: MinusCircle,
       }
@@ -96,11 +125,16 @@ export function getLookupStatusPresentation(
         className: "border-slate-500/40 bg-slate-500/10 text-slate-300",
         Icon: MinusCircle,
       }
+    case "invalid_response":
+    case "malformed_response":
+      return {
+        label: "Malformed Response",
+        className: "border-red-500/40 bg-red-500/10 text-red-300",
+        Icon: FileWarning,
+      }
     case "failed":
     case "lookup_failed":
     case "error":
-    case "invalid_response":
-    case "malformed_response":
       return {
         label: "Lookup Failed",
         className: "border-red-500/40 bg-red-500/10 text-red-300",

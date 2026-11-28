@@ -7,6 +7,7 @@ export { NormalizationStatusBadge } from "./normalization-status-badge";
 export { EnrichmentStatusBadge } from "./enrichment-status-badge";
 export { ThreatLookupStatusBadge, ThreatVerdictBadge } from "./threat-intel-status-badge";
 export { EnrichmentContextPanel } from "./enrichment-context-panel";
+export { ProviderStatusPanel } from "./provider-status-panel";
 export { NormalizedEventView } from "./normalized-event-view";
 export { NormalizedEventExplorer, getNormalizedEventKey } from "./normalized-event-explorer";
 export {
@@ -18,6 +19,9 @@ export {
   fetchNormalizedEventById,
   fetchNormalizedEventEnrichment,
   retryNormalizedEventEnrichment,
+  sanitizeFailureCategory,
+  normalizeProviderStatus,
+  normalizeProviderStatusList,
   EVENT_INGEST_ENDPOINT,
   EVENTS_LIST_ENDPOINT,
   EVENTS_NORMALIZED_ENDPOINT,
@@ -54,6 +58,9 @@ export type {
   ObservableReference,
   EventEnrichmentContext,
   ThreatIntelLookupStatus,
+  ThreatIntelProviderHealthStatus,
+  ThreatIntelCircuitState,
+  ThreatIntelProviderStatus,
 } from "@/types";
 
 export const EVENTS_CONFIG = {

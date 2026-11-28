@@ -21,6 +21,7 @@ import type {
   RecentEventsEnvelope,
   SystemInfoResponse,
   ThreatIntelContext,
+  ThreatIntelProviderStatus,
 } from "@/types";
 
 // ---------------------------------------------------------------------------
@@ -683,6 +684,21 @@ function normalizeEnrichmentContext(
             confidence,
             cached,
             live_lookup_performed: obsLiveLookup,
+            failure_category:
+              sanitizeFailureCategory(item.failure_category) ??
+              sanitizeFailureCategory(tiObj?.failure_category),
+            retry_count:
+              typeof item.retry_count === "number"
+                ? item.retry_count
+                : typeof tiObj?.retry_count === "number"
+                  ? tiObj.retry_count
+                  : null,
+            retry_exhausted:
+              typeof item.retry_exhausted === "boolean"
+                ? item.retry_exhausted
+                : typeof tiObj?.retry_exhausted === "boolean"
+                  ? tiObj.retry_exhausted
+                  : null,
             references,
             tags: asStringArray(item.tags),
             provenance: parsedProv,
@@ -990,3 +1006,93 @@ export const retryNormalizedEventEnrichment = async (
   }
   return mapped;
 };
+
+/**
+ * Sanitizes operational failure categories so credentials, bearer tokens,
+ * query secrets, and raw stack traces are never surfaced in UI telemetry.
+ */
+export function sanitizeFailureCategory(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  const redacted = trimmed
+    .replace(/\bBearer\s+\S+/gi, "Bearer [REDACTED]")
+    .replace(/(authorization)\s*:\s*Bearer\s*\[REDACTED\]/gi, "$1=[REDACTED]")
+    .replace(/(bearer|token|api[_-]?key|secret|password|authorization)\s*[:=]\s*\S+/gi, "$1=[REDACTED]");
+
+  const firstLine = redacted.split(/\r?\n/)[0]?.trim() ?? "";
+  if (!firstLine) return null;
+  return firstLine.length > 120 ? `${firstLine.slice(0, 117)}...` : firstLine;
+}
+
+/**
+ * Maps an unknown backend provider-status entry into a safe operational status contract.
+ * Ignores sensitive fields such as credentials, auth headers, and raw payloads.
+ */
+export function normalizeProviderStatus(raw: unknown): ThreatIntelProviderStatus | null {
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  const providerId =
+    typeof obj.provider_id === "string"
+      ? obj.provider_id.trim()
+      : typeof obj.id === "string"
+        ? obj.id.trim()
+        : typeof obj.provider === "string"
+          ? obj.provider.trim()
+          : "";
+  if (!providerId) return null;
+
+  const enabled = typeof obj.enabled === "boolean" ? obj.enabled : true;
+  const rawStatus =
+    typeof obj.status === "string" && obj.status.trim()
+      ? obj.status.trim().toLowerCase()
+      : enabled
+        ? "degraded"
+        : "disabled";
+  const circuitRaw =
+    typeof obj.circuit_breaker_state === "string"
+      ? obj.circuit_breaker_state
+      : typeof obj.circuit_state === "string"
+        ? obj.circuit_state
+        : null;
+
+  return {
+    provider_id: providerId,
+    provider_name:
+      typeof obj.provider_name === "string"
+        ? obj.provider_name
+        : typeof obj.name === "string"
+          ? obj.name
+          : null,
+    enabled,
+    status: !enabled && rawStatus !== "disabled" ? "disabled" : rawStatus,
+    circuit_breaker_state: circuitRaw ? circuitRaw.trim().toLowerCase() : null,
+    last_success_at:
+      typeof obj.last_success_at === "string"
+        ? obj.last_success_at
+        : typeof obj.last_successful_lookup_at === "string"
+          ? obj.last_successful_lookup_at
+          : null,
+    failure_category: sanitizeFailureCategory(
+      obj.failure_category ?? obj.last_failure_category ?? obj.error_category
+    ),
+    is_live: typeof obj.is_live === "boolean" ? obj.is_live : null,
+    retry_count: typeof obj.retry_count === "number" ? obj.retry_count : null,
+    retry_exhausted:
+      typeof obj.retry_exhausted === "boolean" ? obj.retry_exhausted : null,
+  };
+}
+
+/** Normalizes either an array or `{ providers: [...] }` envelope into safe operational records. */
+export function normalizeProviderStatusList(raw: unknown): ThreatIntelProviderStatus[] {
+  const list = Array.isArray(raw)
+    ? raw
+    : raw && typeof raw === "object" && Array.isArray((raw as Record<string, unknown>).providers)
+      ? ((raw as Record<string, unknown>).providers as unknown[])
+      : [];
+
+  return list
+    .map((entry) => normalizeProviderStatus(entry))
+    .filter((entry): entry is ThreatIntelProviderStatus => entry !== null);
+}
