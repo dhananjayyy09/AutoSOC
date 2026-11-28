@@ -428,6 +428,27 @@ function parseEventEnrichmentSections(raw: unknown): EventEnrichmentContextSecti
   if (sec.threat_intel && typeof sec.threat_intel === "object") {
     const ti = sec.threat_intel as Record<string, unknown>;
     threatIntel = {
+      status: typeof ti.status === "string" ? ti.status : null,
+      provider: typeof ti.provider === "string" ? ti.provider : null,
+      lookup_timestamp:
+        typeof ti.lookup_timestamp === "string"
+          ? ti.lookup_timestamp
+          : typeof ti.looked_up_at === "string"
+            ? ti.looked_up_at
+            : null,
+      cached:
+        typeof ti.cached === "boolean"
+          ? ti.cached
+          : typeof ti.cache_hit === "boolean"
+            ? ti.cache_hit
+            : null,
+      confidence: typeof ti.confidence === "number" ? ti.confidence : null,
+      evidence_summary:
+        typeof ti.evidence_summary === "string"
+          ? ti.evidence_summary
+          : typeof ti.evidence === "string"
+            ? ti.evidence
+            : null,
       ip_score: typeof ti.ip_score === "number" ? ti.ip_score : null,
       ip_categories: asStringArray(ti.ip_categories),
       domain_score: typeof ti.domain_score === "number" ? ti.domain_score : null,
@@ -516,6 +537,61 @@ function normalizeEnrichmentContext(
               : provObj?.provider ??
                 (typeof item.source === "string" ? item.source : null);
 
+          const tiObj =
+            item.threat_intel && typeof item.threat_intel === "object"
+              ? (item.threat_intel as Record<string, unknown>)
+              : null;
+          const lookupStatus =
+            typeof item.lookup_status === "string"
+              ? item.lookup_status
+              : typeof tiObj?.lookup_status === "string"
+                ? tiObj.lookup_status
+                : typeof tiObj?.status === "string"
+                  ? tiObj.status
+                  : null;
+          const lookupTimestamp =
+            typeof item.lookup_timestamp === "string"
+              ? item.lookup_timestamp
+              : typeof item.looked_up_at === "string"
+                ? item.looked_up_at
+                : typeof tiObj?.lookup_timestamp === "string"
+                  ? tiObj.lookup_timestamp
+                  : typeof tiObj?.looked_up_at === "string"
+                    ? tiObj.looked_up_at
+                    : null;
+          const evidenceSummary =
+            typeof item.evidence_summary === "string"
+              ? item.evidence_summary
+              : typeof item.evidence === "string"
+                ? item.evidence
+                : typeof tiObj?.evidence_summary === "string"
+                  ? tiObj.evidence_summary
+                  : typeof tiObj?.evidence === "string"
+                    ? tiObj.evidence
+                    : provObj?.evidence ?? null;
+          const confidence =
+            typeof item.confidence === "number"
+              ? item.confidence
+              : typeof tiObj?.confidence === "number"
+                ? tiObj.confidence
+                : null;
+          const cached =
+            typeof item.cached === "boolean"
+              ? item.cached
+              : typeof item.cache_hit === "boolean"
+                ? item.cache_hit
+                : typeof tiObj?.cached === "boolean"
+                  ? tiObj.cached
+                  : typeof tiObj?.cache_hit === "boolean"
+                    ? tiObj.cache_hit
+                    : null;
+          const obsLiveLookup =
+            typeof item.live_lookup_performed === "boolean"
+              ? item.live_lookup_performed
+              : typeof tiObj?.live_lookup_performed === "boolean"
+                ? tiObj.live_lookup_performed
+                : provObj?.live_lookup_performed ?? null;
+
           return {
             observable: observableValue,
             normalized_value: normalizedValue,
@@ -534,7 +610,14 @@ function normalizeEnrichmentContext(
                   : typeof item.verdict === "string"
                     ? item.verdict
                     : null,
-            verdict: typeof item.verdict === "string" ? item.verdict : null,
+            verdict:
+              typeof item.verdict === "string"
+                ? item.verdict
+                : typeof item.reputation === "string"
+                  ? item.reputation
+                  : typeof tiObj?.verdict === "string"
+                    ? tiObj.verdict
+                    : null,
             provider: providerName,
             source_field: sourceField,
             enriched_at:
@@ -543,6 +626,12 @@ function normalizeEnrichmentContext(
                 : typeof item.timestamp === "string"
                   ? item.timestamp
                   : parentEnrichedAt,
+            lookup_status: lookupStatus,
+            lookup_timestamp: lookupTimestamp,
+            evidence_summary: evidenceSummary,
+            confidence,
+            cached,
+            live_lookup_performed: obsLiveLookup,
             tags: asStringArray(item.tags),
             provenance: parsedProv,
             context:

@@ -699,4 +699,73 @@ describe('fetchNormalizedEvents & fetchNormalizedEventById', () => {
     expect(res.enrichment?.observables?.[0].source_field).toBe('source_ip')
     expect(res.enrichment?.observables?.[0].enriched_at).toBe('2026-11-26T18:00:02Z')
   })
+
+  it('maps Day 10 provider-backed TI lookup fields when present', async () => {
+    const backendItem = {
+      event_id: 'evt-ti-map',
+      ingestion_id: 'ing-ti-map',
+      raw_envelope_id: 10,
+      timestamp: '2026-11-28T10:00:00Z',
+      source_type: 'suricata',
+      sensor_id: 'sensor-01',
+      event_category: 'network',
+      event_type: 'network.alert',
+      host: 'edge-01',
+      severity: 4,
+      metadata: {},
+      normalization_status: 'normalized',
+      normalization_errors: [],
+      normalization_warnings: [],
+      enrichment_status: 'enriched',
+      enrichment: {
+        status: 'enriched',
+        live_lookup_performed: true,
+        enriched_at: '2026-11-28T10:00:01Z',
+        context: {
+          threat_intel: {
+            status: 'completed',
+            provider: 'abuseipdb',
+            cached: true,
+            confidence: 0.9,
+            lookup_timestamp: '2026-11-28T10:00:02Z',
+            evidence_summary: 'Matched known scanner',
+            sources: ['abuseipdb'],
+          },
+        },
+        observables: [
+          {
+            observable_type: 'ip',
+            normalized_value: '203.0.113.88',
+            original_value: '203.0.113.88',
+            classification: 'public_routable',
+            verdict: 'suspicious',
+            provider: 'abuseipdb',
+            lookup_status: 'completed',
+            lookup_timestamp: '2026-11-28T10:00:02Z',
+            evidence_summary: 'Matched known scanner',
+            confidence: 0.9,
+            cached: true,
+            live_lookup_performed: true,
+            provenance: {
+              source_fields: ['source_ip'],
+              method: 'live_reputation_lookup',
+              evidence: 'Matched known scanner',
+            },
+          },
+        ],
+      },
+      created_at: '2026-11-28T10:00:00Z',
+    }
+    ;(global.fetch as jest.Mock).mockResolvedValueOnce({ ok: true, json: async () => backendItem })
+
+    const res = await fetchNormalizedEventById('evt-ti-map')
+    const obs = res.enrichment?.observables?.[0]
+    expect(obs?.lookup_status).toBe('completed')
+    expect(obs?.confidence).toBe(0.9)
+    expect(obs?.cached).toBe(true)
+    expect(obs?.lookup_timestamp).toBe('2026-11-28T10:00:02Z')
+    expect(obs?.evidence_summary).toBe('Matched known scanner')
+    expect(res.enrichment?.context?.threat_intel?.cached).toBe(true)
+    expect(res.enrichment?.context?.threat_intel?.confidence).toBe(0.9)
+  })
 })
