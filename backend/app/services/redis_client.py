@@ -9,16 +9,30 @@ class RedisService:
         self.client = None
 
     async def connect(self):
-        self.client = redis.from_url(settings.redis_uri, decode_responses=True)
+        client = redis.from_url(
+            settings.redis_uri,
+            decode_responses=True,
+            socket_connect_timeout=2.0,
+            socket_timeout=2.0,
+        )
         try:
-            await self.client.ping()
+            await client.ping()
+            self.client = client
             logger.info("Connected to Redis successfully.")
         except Exception as e:
-            logger.error(f"Failed to connect to Redis: {e}")
+            logger.error("Failed to connect to Redis (%s).", type(e).__name__)
+            try:
+                await client.aclose()
+            except Exception:
+                pass
+            self.client = None
 
     async def close(self):
         if self.client:
-            await self.client.aclose()
+            try:
+                await self.client.aclose()
+            finally:
+                self.client = None
 
     async def check_health(self) -> bool:
         if not self.client:

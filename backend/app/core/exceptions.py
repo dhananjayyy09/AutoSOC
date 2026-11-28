@@ -88,8 +88,13 @@ async def duplicate_ingestion_handler(request: Request, exc: Exception) -> JSONR
 
 
 async def persistence_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    """Return a sanitised 500 response on storage failures without exposing DB details."""
-    logger.error("Persistence error on %s %s: %s", request.method, request.url.path, exc)
+    """Return a sanitised 500 response on storage failures without exposing DB details or credentials."""
+    logger.error(
+        "Persistence error on %s %s (%s)",
+        request.method,
+        request.url.path,
+        type(exc).__name__,
+    )
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={"message": "Internal Server Error"},

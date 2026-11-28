@@ -7,7 +7,7 @@ import logging
 
 logger = logging.getLogger("autosoc")
 
-engine = create_async_engine(settings.async_database_uri, echo=False)
+engine = create_async_engine(settings.async_database_uri, echo=False, pool_pre_ping=True)
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 
@@ -34,7 +34,7 @@ async def init_db() -> bool:
         logger.info("Connected to PostgreSQL and verified schema successfully.")
         return True
     except Exception as e:
-        logger.error(f"Failed to connect to PostgreSQL: {e}")
+        logger.error("Failed to connect to PostgreSQL (%s).", type(e).__name__)
         return False
 
 async def close_db():

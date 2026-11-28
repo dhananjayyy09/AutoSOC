@@ -10,6 +10,7 @@ logger = logging.getLogger("autosoc")
 
 _TI_PROVIDER_NAME_RE = re.compile(r"^[a-zA-Z0-9_.-]{1,64}$")
 _SUPPORTED_LLM_PROVIDERS = frozenset({"ollama", "fixture"})
+_VALID_APP_ENVS = frozenset({"development", "testing", "staging", "production"})
 
 
 class Settings(BaseSettings):
@@ -23,10 +24,10 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
 
     # Postgres
-    POSTGRES_SERVER: str = "localhost"
-    POSTGRES_USER: str = "autosoc"
+    POSTGRES_SERVER: str = Field(default="localhost", min_length=1)
+    POSTGRES_USER: str = Field(default="autosoc", min_length=1)
     POSTGRES_PASSWORD: str = "autosoc_pass"
-    POSTGRES_DB: str = "autosoc_db"
+    POSTGRES_DB: str = Field(default="autosoc_db", min_length=1)
     POSTGRES_PORT: str = "5432"
 
     @property
@@ -37,22 +38,59 @@ class Settings(BaseSettings):
         )
 
     # Redis
-    REDIS_HOST: str = "localhost"
-    REDIS_PORT: int = 6379
+    REDIS_HOST: str = Field(default="localhost", min_length=1)
+    REDIS_PORT: int = Field(default=6379, ge=1, le=65535)
 
     @property
     def redis_uri(self) -> str:
         return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/0"
 
     # Qdrant
-    QDRANT_HOST: str = "localhost"
-    QDRANT_PORT: int = 6333
+    QDRANT_HOST: str = Field(default="localhost", min_length=1)
+    QDRANT_PORT: int = Field(default=6333, ge=1, le=65535)
 
     # Kafka
     KAFKA_BROKERS: str = Field(
         default="localhost:9092",
+        min_length=1,
         validation_alias=AliasChoices("KAFKA_BROKERS", "KAFKA_BOOTSTRAP_SERVERS"),
     )
+
+    @field_validator("APP_ENV")
+    @classmethod
+    def validate_app_env(cls, value: str) -> str:
+        normalized = str(value or "").strip().lower()
+        if normalized not in _VALID_APP_ENVS:
+            raise ValueError(
+                f"APP_ENV must be one of {sorted(_VALID_APP_ENVS)}, got: {value!r}"
+            )
+        return normalized
+
+    @field_validator("POSTGRES_PORT")
+    @classmethod
+    def validate_postgres_port(cls, value: str) -> str:
+        raw = str(value or "").strip()
+        if not raw.isdigit():
+            raise ValueError("POSTGRES_PORT must be a numeric TCP port between 1 and 65535")
+        port_num = int(raw)
+        if port_num < 1 or port_num > 65535:
+            raise ValueError("POSTGRES_PORT must be between 1 and 65535")
+        return str(port_num)
+
+    @field_validator(
+        "POSTGRES_SERVER",
+        "POSTGRES_USER",
+        "POSTGRES_DB",
+        "REDIS_HOST",
+        "QDRANT_HOST",
+        "KAFKA_BROKERS",
+    )
+    @classmethod
+    def validate_non_empty_endpoint_field(cls, value: str) -> str:
+        cleaned = str(value or "").strip()
+        if not cleaned:
+            raise ValueError("Configuration host/database/broker field must not be blank")
+        return cleaned
 
     # Threat Intelligence Providers (Day 10)
     TI_ENABLED: bool = False

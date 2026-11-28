@@ -9,18 +9,32 @@ class QdrantService:
         self.client = None
 
     async def connect(self):
+        client = None
         try:
-            self.client = AsyncQdrantClient(host=settings.QDRANT_HOST, port=settings.QDRANT_PORT)
+            client = AsyncQdrantClient(
+                host=settings.QDRANT_HOST,
+                port=settings.QDRANT_PORT,
+                timeout=2.0,
+            )
             # Check connection
-            await self.client.get_collections()
+            await client.get_collections()
+            self.client = client
             logger.info("Connected to Qdrant successfully.")
         except Exception as e:
-            logger.error(f"Failed to connect to Qdrant: {e}")
+            logger.error("Failed to connect to Qdrant (%s).", type(e).__name__)
+            if client is not None:
+                try:
+                    await client.close()
+                except Exception:
+                    pass
             self.client = None
 
     async def close(self):
         if self.client:
-            await self.client.close()
+            try:
+                await self.client.close()
+            finally:
+                self.client = None
 
     async def check_health(self) -> bool:
         if not self.client:

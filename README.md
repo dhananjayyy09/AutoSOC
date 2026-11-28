@@ -109,7 +109,54 @@ AutoSOC/
 
 ## Getting Started
 
-> Setup instructions will be added by DJ as the backend scaffolding matures.
+### 1. Prerequisites
+- Python 3.11+ (backend virtual environment at `.venv/`)
+- Node.js 20+ and npm (frontend under `frontend/`)
+- Docker & Docker Compose (for local PostgreSQL, Redis, Qdrant, Zookeeper, and Kafka)
+
+### 2. Environment Configuration
+Copy the environment template and adjust values as needed for local development (never commit real secrets or API keys):
+```bash
+cp .env.example .env
+```
+
+### 3. Start Local Infrastructure
+```bash
+docker compose up -d
+```
+Services exposed locally by `docker-compose.yml`:
+- **PostgreSQL 15:** `localhost:5432`
+- **Redis 7:** `localhost:6379`
+- **Qdrant:** `localhost:6333` (HTTP) / `localhost:6334` (gRPC)
+- **Zookeeper / Kafka:** `localhost:2181` / `localhost:9092`
+
+Database SQL migrations live in `backend/app/db/migrations/` (`001_create_raw_event_envelopes.sql` through `004_create_event_enrichments.sql`). On application startup, `init_db()` verifies PostgreSQL connectivity and ensures ORM tables exist.
+
+### 4. Start the Backend API
+```bash
+cd backend
+uvicorn main:app --host 127.0.0.1 --port 8000 --reload
+```
+Operational verification endpoints:
+- `GET http://127.0.0.1:8000/health` (liveness)
+- `GET http://127.0.0.1:8000/ready` (4-way infrastructure readiness)
+- `GET http://127.0.0.1:8000/api/v1/system/info` (platform metadata)
+
+### 5. Start the Frontend Dashboard
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+### 6. Run Tests
+```bash
+# Backend tests (from backend/)
+pytest tests -v -rs
+
+# Frontend tests (from frontend/)
+npm test
+```
 
 ---
 

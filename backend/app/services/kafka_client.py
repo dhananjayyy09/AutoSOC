@@ -1,3 +1,4 @@
+import asyncio
 from confluent_kafka.admin import AdminClient
 from app.core.config import settings
 import logging
@@ -10,26 +11,25 @@ class KafkaService:
 
     async def connect(self):
         try:
-            # Minimal connection check using AdminClient
-            self.admin = AdminClient({
+            # Minimal connection check using AdminClient off the asyncio event loop
+            admin = AdminClient({
                 'bootstrap.servers': settings.KAFKA_BROKERS
             })
-            metadata = self.admin.list_topics(timeout=3.0)
+            await asyncio.to_thread(admin.list_topics, timeout=3.0)
+            self.admin = admin
             logger.info("Connected to Kafka successfully.")
         except Exception as e:
-            logger.error(f"Failed to connect to Kafka: {e}")
+            logger.error("Failed to connect to Kafka (%s).", type(e).__name__)
             self.admin = None
 
     async def close(self):
         self.admin = None
-        
+
     async def check_health(self) -> bool:
         if self.admin is None:
             return False
         try:
-            # list_topics is synchronous in confluent_kafka, so we wrap it lightly
-            # In a real async scenario, we might use aiokafka or run in executor
-            self.admin.list_topics(timeout=2.0)
+            await asyncio.to_thread(self.admin.list_topics, timeout=2.0)
             return True
         except Exception:
             return False
