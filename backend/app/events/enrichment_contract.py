@@ -77,7 +77,7 @@ class IndicatorEnrichmentContext(BaseModel):
 
 
 class ThreatIntelContext(BaseModel):
-    """Validated threat intelligence placeholder/provider context (detection-neutral)."""
+    """Validated threat intelligence summary attached alongside observable context."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -86,6 +86,10 @@ class ThreatIntelContext(BaseModel):
     domain_score: Optional[int] = Field(default=None, ge=0, le=100)
     hash_known_malware: Optional[bool] = None
     sources: List[str] = Field(default_factory=list)
+    providers_queried: List[str] = Field(default_factory=list)
+    cache_hits: int = Field(default=0, ge=0)
+    live_lookups: int = Field(default=0, ge=0)
+    max_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
 
 class CanonicalObservableProvenance(BaseModel):
@@ -102,6 +106,8 @@ class CanonicalObservableProvenance(BaseModel):
     method: str = Field(min_length=1, max_length=128)
     evidence: str = Field(min_length=1, max_length=512)
     live_lookup_performed: bool = False
+    lookup_status: Optional[str] = Field(default=None, max_length=32)
+    lookup_timestamp: Optional[str] = Field(default=None, max_length=64)
 
 
 class CanonicalEnrichedObservable(BaseModel):
@@ -114,6 +120,9 @@ class CanonicalEnrichedObservable(BaseModel):
     original_value: str = Field(min_length=1, max_length=2048)
     classification: ObservableClassificationEnum
     verdict: ObservableVerdictEnum = ObservableVerdictEnum.UNKNOWN
+    confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    lookup_status: Optional[str] = Field(default=None, max_length=32)
+    lookup_timestamp: Optional[str] = Field(default=None, max_length=64)
     context: Dict[str, Any] = Field(default_factory=dict)
     provenance: CanonicalObservableProvenance
 

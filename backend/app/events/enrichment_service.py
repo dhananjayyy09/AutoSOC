@@ -7,6 +7,7 @@ and event-level network/indicator context (DJ's `DeterministicLocalEnricher`) vi
 persisting separately in `event_enrichments` without modifying normalized or raw data.
 """
 
+import asyncio
 import ipaddress
 import logging
 import uuid
@@ -16,6 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.events.enrichment_contract import (
     ENRICHMENT_PIPELINE_VERSION,
     CanonicalEnrichedObservable,
@@ -26,6 +28,7 @@ from app.events.enrichment_contract import (
     IndicatorEnrichmentContext,
     NetworkEnrichmentContext,
     NormalizedEventEnrichmentPayload,
+    ThreatIntelContext,
     contains_forbidden_raw_keys,
 )
 from app.events.models import EventEnrichment, NormalizedEvent
@@ -35,7 +38,7 @@ from app.events.repository import (
     get_normalized_event_by_event_id,
     persist_or_update_event_enrichment,
 )
-from app.threat_intelligence import DeterministicEventEnricher
+from app.threat_intelligence import DeterministicEventEnricher, ThreatIntelOrchestrator
 
 logger = logging.getLogger("autosoc")
 
@@ -232,16 +235,23 @@ def _issue_messages(items: Any) -> List[str]:
 
 class DeterministicLocalEnricher:
     """
-    Canonical Day 9 EventEnricherProtocol implementation combining:
+    Canonical Day 9 + Day 10 EventEnricherProtocol implementation combining:
       - Pranjal's `DeterministicEventEnricher` for observable extraction,
         normalization, deduplication, classification, verdicts, and provenance
+      - Day 10 `ThreatIntelOrchestrator` for configurable external TI lookups,
+        TTL caching, timeouts, and offline fallback
       - DJ's deterministic event-level `context.network` & `context.indicators`
     """
 
     def __init__(
-        self, observable_enricher: Optional[DeterministicEventEnricher] = None
+        self,
+        observable_enricher: Optional[DeterministicEventEnricher] = None,
+        ti_orchestrator: Optional[ThreatIntelOrchestrator] = None,
     ) -> None:
         self._observable_enricher = observable_enricher or DeterministicEventEnricher()
+        self._ti_orchestrator = ti_orchestrator or ThreatIntelOrchestrator(
+            settings_obj=settings
+        )
 
     @property
     def PROVIDER_NAME(self) -> str:
@@ -251,20 +261,51 @@ class DeterministicLocalEnricher:
     def PROVIDER_VERSION(self) -> str:
         return self._observable_enricher._provider.provider_version
 
+    @property
+    def ti_orchestrator(self) -> ThreatIntelOrchestrator:
+        return self._ti_orchestrator
+
     async def enrich(self, normalized_event: Dict[str, Any]) -> Dict[str, Any]:
         ti_result = self._observable_enricher.enrich_event(normalized_event)
-        ti_dump = ti_result.model_dump()
+        ti_outcome = None
+        if (
+            ti_result.observables
+            and ti_result.enrichment_status
+            in (EnrichmentStatusEnum.ENRICHED, EnrichmentStatusEnum.ENRICHED_PARTIAL)
+        ):
+            ti_outcome = await self._ti_orchestrator.enrich_observables(
+                ti_result.observables,
+                ingestion_id=str(ti_result.ingestion_id or normalized_event["ingestion_id"]),
+                source_event_id=ti_result.source_event_id,
+            )
+            obs_models = ti_outcome.observables
+            live_lookup = bool(ti_result.live_lookup_performed or ti_outcome.live_lookup_performed)
+            ti_warnings = _issue_messages(
+                [w.model_dump() for w in ti_result.warnings]
+                + [w.model_dump() for w in ti_outcome.warnings]
+            )
+            ti_errors = _issue_messages([e.model_dump() for e in ti_result.errors])
+        else:
+            obs_models = ti_result.observables
+            live_lookup = ti_result.live_lookup_performed
+            ti_warnings = _issue_messages([w.model_dump() for w in ti_result.warnings])
+            ti_errors = _issue_messages([e.model_dump() for e in ti_result.errors])
 
         extra_warnings: List[str] = []
         event_context, context_fields = _extract_event_context(
             normalized_event, extra_warnings
         )
+        if ti_outcome is not None and ti_outcome.threat_intel_context is not None:
+            event_context = event_context.model_copy(
+                update={"threat_intel": ThreatIntelContext(**ti_outcome.threat_intel_context)}
+            )
+            context_fields.append("context.threat_intel")
 
-        warnings = _issue_messages(ti_dump.get("warnings")) + extra_warnings
-        errors = _issue_messages(ti_dump.get("errors"))
+        warnings = ti_warnings + extra_warnings
+        errors = ti_errors
 
         obs_list = [
-            CanonicalEnrichedObservable(**obs) for obs in ti_dump.get("observables", [])
+            CanonicalEnrichedObservable(**obs.model_dump()) for obs in obs_models
         ]
         for obs in obs_list:
             for field in obs.provenance.source_fields:
@@ -273,7 +314,9 @@ class DeterministicLocalEnricher:
                     context_fields.append(key)
 
         status = ti_result.enrichment_status
-        if status == EnrichmentStatusEnum.ENRICHED and extra_warnings:
+        if status == EnrichmentStatusEnum.ENRICHED and (
+            extra_warnings or (ti_outcome is not None and ti_outcome.has_partial_failures)
+        ):
             status = EnrichmentStatusEnum.ENRICHED_PARTIAL
 
         payload = NormalizedEventEnrichmentPayload(
@@ -286,7 +329,7 @@ class DeterministicLocalEnricher:
             pipeline_version=ENRICHMENT_PIPELINE_VERSION,
             provider=ti_result.provider,
             provider_version=ti_result.provider_version,
-            live_lookup_performed=ti_result.live_lookup_performed,
+            live_lookup_performed=live_lookup,
             enriched_fields=context_fields,
             source_event_id=str(normalized_event["event_id"]),
             source_ingestion_id=str(normalized_event["ingestion_id"]),
@@ -296,7 +339,7 @@ class DeterministicLocalEnricher:
             status=status,
             provider=ti_result.provider,
             provider_version=ti_result.provider_version,
-            live_lookup_performed=ti_result.live_lookup_performed,
+            live_lookup_performed=live_lookup,
             provenance=provenance,
             enrichment_data=payload,
             warnings=warnings,
@@ -385,12 +428,8 @@ class EnrichmentService:
         existing = await get_event_enrichment_by_event_id(
             session, norm_record.event_id
         )
-        if existing is not None:
-            is_retryable = existing.enrichment_status == EnrichmentStatusEnum.FAILED.value
-            if not retry:
-                return existing
-            if not retry and is_retryable:
-                return existing
+        if existing is not None and not retry:
+            return existing
 
         now_utc = datetime.now(timezone.utc)
         norm_dict = _norm_record_to_dict(norm_record)
@@ -412,6 +451,8 @@ class EnrichmentService:
                 validated_result = self._coerce_provider_output(raw_output, norm_record)
         except ValidationError as exc:
             failure_errors = _sanitize_validation_errors(exc)
+        except asyncio.TimeoutError:
+            failure_errors = ["Enrichment provider timeout"]
         except Exception as exc:
             logger.warning(
                 "Enricher raised %s for event_id=%s",
@@ -427,6 +468,33 @@ class EnrichmentService:
                 else (failure_errors or ["Enrichment failed"])
             )
             warnings = list(validated_result.warnings) if validated_result else []
+
+            # Preserve previously persisted valid enrichment data if a manual retry fails/times out
+            has_existing_valid_data = (
+                existing is not None
+                and bool(existing.enrichment_data)
+                and existing.enrichment_status != EnrichmentStatusEnum.FAILED.value
+            )
+            if has_existing_valid_data and existing is not None:
+                preserved_warnings = list(existing.enrichment_warnings or [])
+                for err in errors:
+                    msg = f"Retry failed (existing context preserved): {err}"
+                    if msg not in preserved_warnings:
+                        preserved_warnings.append(msg)
+                return await self._upsert_enrichment(
+                    session,
+                    norm_record=norm_record,
+                    existing=existing,
+                    provider=existing.provider,
+                    enrichment_status=EnrichmentStatusEnum.ENRICHED_PARTIAL.value,
+                    enrichment_data=dict(existing.enrichment_data),
+                    provenance=dict(existing.provenance or {}),
+                    warnings=preserved_warnings,
+                    errors=errors,
+                    enriched_at=existing.enriched_at,
+                    now_utc=now_utc,
+                )
+
             prov = (
                 validated_result.provenance.model_dump()
                 if validated_result
