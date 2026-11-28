@@ -1,4 +1,7 @@
 import type {
+  AiProviderOperationalState,
+  AiProviderStatus,
+  AiProviderStatusResult,
   BackendValidationErrorItem,
   EventEnrichmentContext,
   EventEnrichmentContextSections,
@@ -317,6 +320,11 @@ export const EVENT_INGEST_ENDPOINT = "/api/v1/events/ingest";
 export const EVENTS_LIST_ENDPOINT = "/api/v1/events/ingested";
 export const EVENTS_NORMALIZED_ENDPOINT = "/api/v1/events/normalized";
 export const TI_PROVIDERS_STATUS_ENDPOINT = "/api/v1/events/threat-intelligence/providers";
+/**
+ * Provisional Day 12 AI/LLM provider status endpoint path.
+ * Pending final route confirmation from DJ's backend Day 12 implementation.
+ */
+export const AI_PROVIDER_STATUS_ENDPOINT = "/api/v1/system/llm/status";
 export const DEFAULT_RECENT_EVENTS_LIMIT = 20;
 export const MAX_QUERY_LIMIT = 100;
 export const MAX_QUERY_OFFSET = 10_000;
@@ -1010,10 +1018,10 @@ export const retryNormalizedEventEnrichment = async (
 };
 
 /**
- * Sanitizes operational failure categories so credentials, bearer tokens,
- * query secrets, and raw stack traces are never surfaced in UI telemetry.
+ * Sanitizes operational text/messages so credentials, bearer tokens, URL auth,
+ * provider keys, and multi-line exception traces are never surfaced in UI telemetry.
  */
-export function sanitizeFailureCategory(value: unknown): string | null {
+export function sanitizeOperationalText(value: unknown, maxLength = 120): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   if (!trimmed) return null;
@@ -1021,11 +1029,21 @@ export function sanitizeFailureCategory(value: unknown): string | null {
   const redacted = trimmed
     .replace(/\bBearer\s+\S+/gi, "Bearer [REDACTED]")
     .replace(/(authorization)\s*:\s*Bearer\s*\[REDACTED\]/gi, "$1=[REDACTED]")
-    .replace(/(bearer|token|api[_-]?key|secret|password|authorization)\s*[:=]\s*\S+/gi, "$1=[REDACTED]");
+    .replace(/(bearer|token|api[_-]?key|secret|password|authorization)\s*[:=]\s*\S+/gi, "$1=[REDACTED]")
+    .replace(/(https?:\/\/)[^/\s@]+:[^/\s@]+@/gi, "$1[REDACTED]@")
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "[REDACTED]");
 
   const firstLine = redacted.split(/\r?\n/)[0]?.trim() ?? "";
   if (!firstLine) return null;
-  return firstLine.length > 120 ? `${firstLine.slice(0, 117)}...` : firstLine;
+  return firstLine.length > maxLength ? `${firstLine.slice(0, maxLength - 3)}...` : firstLine;
+}
+
+/**
+ * Sanitizes operational failure categories so credentials, bearer tokens,
+ * query secrets, and raw stack traces are never surfaced in UI telemetry.
+ */
+export function sanitizeFailureCategory(value: unknown): string | null {
+  return sanitizeOperationalText(value, 120);
 }
 
 /**
@@ -1174,3 +1192,138 @@ export const fetchThreatIntelProvidersStatus =
       throw error;
     }
   };
+
+function resolveAiOperationalState(
+  rawStatus: unknown,
+  enabled: boolean | null,
+  configured: boolean | null,
+  httpStatus: number
+): AiProviderOperationalState {
+  if (enabled === false) return "disabled";
+  if (configured === false) return "unconfigured";
+
+  const normalized =
+    typeof rawStatus === "string" ? rawStatus.trim().toLowerCase() : "";
+
+  switch (normalized) {
+    case "disabled":
+      return "disabled";
+    case "unconfigured":
+    case "not_configured":
+    case "missing_config":
+      return "unconfigured";
+    case "ready":
+    case "ok":
+    case "healthy":
+    case "available":
+    case "connected":
+      return httpStatus === 503 ? "unavailable" : "ready";
+    case "unavailable":
+    case "degraded":
+    case "unreachable":
+    case "offline":
+      return "unavailable";
+    case "error":
+    case "failed":
+    default:
+      return normalized === "" && enabled === null && configured === null
+        ? "error"
+        : normalized === ""
+          ? httpStatus === 503
+            ? "unavailable"
+            : "error"
+          : "error";
+  }
+}
+
+/**
+ * Maps a raw Day 12 AI/LLM provider status payload into sanitized UI metadata.
+ * Never exposes credentials, prompts, generated text, or raw exception traces.
+ */
+export function normalizeAiProviderStatus(
+  raw: unknown,
+  httpStatus = 200
+): AiProviderStatus {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("Malformed response from AI provider status endpoint");
+  }
+
+  const obj = raw as Record<string, unknown>;
+  const enabled = typeof obj.enabled === "boolean" ? obj.enabled : null;
+  const configured = typeof obj.configured === "boolean" ? obj.configured : null;
+  const rawState = obj.status ?? obj.readiness ?? obj.state;
+
+  const hasRecognizableField =
+    enabled !== null ||
+    configured !== null ||
+    typeof rawState === "string" ||
+    typeof obj.provider === "string" ||
+    typeof obj.provider_name === "string" ||
+    typeof obj.model === "string" ||
+    typeof obj.model_name === "string";
+
+  if (!hasRecognizableField) {
+    throw new Error("Malformed response from AI provider status endpoint");
+  }
+
+  return {
+    provider: sanitizeOperationalText(obj.provider_name ?? obj.provider, 80),
+    model: sanitizeOperationalText(
+      obj.model_name ?? obj.model ?? obj.configured_model,
+      100
+    ),
+    status: resolveAiOperationalState(rawState, enabled, configured, httpStatus),
+    enabled,
+    configured,
+    message: sanitizeOperationalText(
+      obj.status_message ?? obj.safe_message ?? obj.message,
+      180
+    ),
+    checked_at: sanitizeOperationalText(
+      obj.last_checked_at ?? obj.checked_at ?? obj.last_check_at ?? obj.timestamp,
+      64
+    ),
+  };
+}
+
+/**
+ * Fetches AI/LLM provider readiness metadata from the Day 12 provider-status endpoint.
+ * - HTTP 404 / 501 returns `{ supported: false }` distinctly from transport/server errors.
+ * - HTTP 503 with structured status payload normalizes conservatively (never 'ready').
+ * - Other errors (5xx/network/malformed JSON) throw so callers display an error state.
+ */
+export const fetchAiProviderStatus = async (
+  endpoint = AI_PROVIDER_STATUS_ENDPOINT
+): Promise<AiProviderStatusResult> => {
+  try {
+    const res = await ApiClient.get<Record<string, unknown>>(endpoint, {
+      cache: "no-store",
+    });
+    return {
+      supported: true,
+      data: normalizeAiProviderStatus(res, 200),
+    };
+  } catch (error) {
+    if (error instanceof ApiError) {
+      if (error.status === 404 || error.status === 501) {
+        return { supported: false };
+      }
+      if (error.status === 503 && error.data && typeof error.data === "object") {
+        const payload = error.data as Record<string, unknown>;
+        const detail =
+          payload.detail && typeof payload.detail === "object" && !Array.isArray(payload.detail)
+            ? payload.detail
+            : payload;
+        try {
+          return {
+            supported: true,
+            data: normalizeAiProviderStatus(detail, 503),
+          };
+        } catch {
+          throw error;
+        }
+      }
+    }
+    throw error;
+  }
+};
